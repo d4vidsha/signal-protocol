@@ -67,6 +67,7 @@ class DoubleRachet():
         self.RK, self.CKs = self.KDF_RK(self.RK, self.DH(self.DHs, self.DHr))
         self.PN = self.Ns
         self.Ns = 0
+        self.Nr = 0
 
     def DH(self, dh_pair, dh_pub):
         try:
@@ -160,8 +161,8 @@ class DoubleRachet():
         if plaintext != None:
             return plaintext
         if header.dh != self.DHr:
-            self.SkipMessageKeys(header.pn)
             self.DHRatchet(header)
+            self.SkipMessageKeys(header.pn)
         self.SkipMessageKeys(header.n)
         self.CKr, mk = self.KDF_CK(self.CKr)
         self.Nr += 1
@@ -173,8 +174,8 @@ class DoubleRachet():
             format=serialization.PublicFormat.Raw
         )
         if (dh_bytes, header.n) in self.MKSKIPPED:
-            mk = self.MKSKIPPED[header.dh, header.n]
-            del self.MKSKIPPED[header.dh, header.n]
+            mk = self.MKSKIPPED[dh_bytes, header.n]
+            del self.MKSKIPPED[dh_bytes, header.n]
             return self.DECRYPT(mk, ciphertext, self.CONCAT(AD, header))
         else:
             return None
@@ -259,6 +260,21 @@ def main():
     decrypted_message = alice.RatchetDecrypt(header, ciphertext, ad)
     print(f"Alice received: {decrypted_message}")
 
+    # test out of order message
+    message = b"Out of order message"
+    ad = b"Associated data"
+    header, ciphertext = bob.RatchetEncrypt(message, ad)
+
+    message2 = b"Out of order message 2"
+    ad2 = b"Associated data 2"
+    header2, ciphertext2 = bob.RatchetEncrypt(message2, ad2)
+
+    # Alice receives and decrypts the message
+    decrypted_message = alice.RatchetDecrypt(header2, ciphertext2, ad2)
+    print(f"Alice received: {decrypted_message}")
+
+    decrypted_message = alice.RatchetDecrypt(header, ciphertext, ad)
+    print(f"Alice received: {decrypted_message}")
 
 
 if __name__ == "__main__":
