@@ -1,3 +1,3 @@
-class DoubleRachet():
+class DoubleRachet:
     def __init__(self):
         return
