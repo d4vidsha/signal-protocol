@@ -1,7 +1,7 @@
-from collections import deque
 from algorithms.x3dh import X3DH
-from algorithms.doublerachet import DoubleRachet
-from enum import Enum
+
+# from algorithms.doublerachet import DoubleRachet
+from algorithms.x3dh import Client, Server
 
 
 def main():
@@ -14,39 +14,14 @@ def main():
     bob = Client("Bob")
 
     # establish connection between alice and bob (x3dh)
+    x3dh = X3DH(server, alice, bob)
+    sk = x3dh.run()
+    print(sk)
 
     # send messages between alice and bob (double ratchet)
+    # alice.send("Hello world!")
 
     return
-
-
-class Curve(Enum):
-    X25519 = 0
-    X448 = 1
-
-
-class KeyPair:
-    def __init__(self):
-        return
-
-
-class Client:
-    def __init__(
-        self, name: str, curve: Curve = Curve.X25519, info: str = "MyProtocol"
-    ):
-        self.name = name
-        self.info: str = info
-        self.curve: Curve
-        self.ik = KeyPair()
-        self.ek = KeyPair()
-        self.spk = KeyPair()
-        self.opk = KeyPair()
-        self.mk = KeyPair()
-
-
-class Server:
-    def __init__(self):
-        self.message_queue = deque([])
 
 
 if __name__ == "__main__":
