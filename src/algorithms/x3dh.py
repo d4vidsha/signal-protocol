@@ -47,6 +47,15 @@ def encodeUCoordinate(u, bits):
     return "".join([chr((u >> 8 * i) & 0xFF) for i in range((bits + 7) / 8)])
 
 
+class Server:
+    """
+    The server handling all connections and messages between clients.
+    """
+
+    def __init__(self):
+        self.message_queue = deque([])
+
+
 class Client:
     """
     The client which can send and receive messages.
@@ -55,6 +64,7 @@ class Client:
     def __init__(
         self,
         name: str,
+        server: Server,
         curve: Curve = Curve.X25519,
         hash_type: HashType = HashType.SHA256,
         info: str = "MyProtocol",
@@ -75,15 +85,11 @@ class Client:
         to represent the type of curve, followed by little-endian encoding
         of the u-coordinate.
         """
+        return
 
-
-class Server:
-    """
-    The server handling all connections and messages between clients.
-    """
-
-    def __init__(self):
-        self.message_queue = deque([])
+    def publish(self, server: Server = None):
+        if server == None:
+            ...
 
 
 class X3DH:
@@ -103,8 +109,8 @@ class X3DH:
         # bob publishes his identity key and prekeys to a server
         self.bob.publish(self.server)
 
-        # alice fetches a "prekey bundle" from the server, and uses it to send an
-        # initial message to bob
+        # alice fetches a "prekey bundle" from the server, and uses it to send
+        # an initial message to bob
         self.alice.fetch(self.server, self.bob)
         self.alice.send(self.server, self.bob)
 
