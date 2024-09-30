@@ -79,9 +79,9 @@ class DoubleRachet():
 
     def KDF_RK(self, rk, dh_out):
         if isinstance(rk, str):
-            rk = rk.encode('utf-8')  # Convert string to bytes if necessary
+            rk = rk.encode('utf-8')
         elif not isinstance(rk, bytes):
-            rk = str(rk).encode('utf-8')  # Convert other types to string and then to bytes if necessary
+            rk = str(rk).encode('utf-8')
         hkdf = HKDF(
             algorithm=hashes.SHA256(),
             length=64, 
@@ -227,12 +227,12 @@ def main():
     message = b"Hello Bob!"
     ad = b"Associated data"
     header, ciphertext = alice.RatchetEncrypt(message, ad)
-        
+    
     # Bob receives and decrypts the message
     decrypted_message = bob.RatchetDecrypt(header, ciphertext, ad)
     print(f"Bob received: {decrypted_message}")
 
-    # Bob sends a message
+    # Bob generate new DH key and sends a message
     bob.generateNewDH()
     message = b"Hello Alice!"
     ad = b"Associated data"
@@ -242,7 +242,7 @@ def main():
     decrypted_message = alice.RatchetDecrypt(header, ciphertext, ad)
     print(f"Alice received: {decrypted_message}")
 
-    # alice generates a new DH key pair
+    # Alice generates a new DH key pair and send a message
     alice.generateNewDH()
     message = b"Hello Bob! Again"
     ad = b"Associated data"
@@ -252,6 +252,7 @@ def main():
     decrypted_message = bob.RatchetDecrypt(header, ciphertext, ad)
     print(f"Bob received: {decrypted_message}")
 
+    # Bob sends a message
     message = b"What's up Alice"
     ad = b"Associated data"
     header, ciphertext = bob.RatchetEncrypt(message, ad)
@@ -276,6 +277,29 @@ def main():
     decrypted_message = alice.RatchetDecrypt(header, ciphertext, ad)
     print(f"Alice received: {decrypted_message}")
 
+    # test out of order message and generate new DH key pair
+    message = b"Out of order message"
+    ad = b"Associated data"
+    header, ciphertext = bob.RatchetEncrypt(message, ad)
+
+    message2 = b"Out of order message 2"
+    ad2 = b"Associated data 2"
+    header2, ciphertext2 = bob.RatchetEncrypt(message2, ad2)
+
+    bob.generateDH()
+    message3 = b"Out of order message 3"
+    ad3 = b"Associated data 3"
+    header3, ciphertext3 = bob.RatchetEncrypt(message3, ad3)
+
+    # Alice receives and decrypts the message
+    decrypted_message = alice.RatchetDecrypt(header3, ciphertext3, ad3)
+    print(f"Alice received: {decrypted_message}")
+
+    decrypted_message = alice.RatchetDecrypt(header2, ciphertext2, ad2)
+    print(f"Alice received: {decrypted_message}")
+
+    decrypted_message = alice.RatchetDecrypt(header, ciphertext, ad)
+    print(f"Alice received: {decrypted_message}")
 
 if __name__ == "__main__":
     main()
