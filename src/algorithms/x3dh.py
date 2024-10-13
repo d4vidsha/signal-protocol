@@ -2,7 +2,7 @@ import logging
 
 from enum import Enum, auto
 from collections import deque
-from typing import Dict, Set
+from typing import Dict, Set, List, Tuple
 from dataclasses import dataclass
 from cryptography.hazmat.primitives.asymmetric.x25519 import (
     X25519PrivateKey,
@@ -53,7 +53,7 @@ class XKeyPair:
             self.public_key = self.private_key.public_key()
 
     def __str__(self):
-        return f"Private key: {self.private_key}\nPublic key: {self.public_key}"
+        return f"Private key: {self.private_key.private_bytes_raw()[:7]}... || Public key: {self.public_key.public_bytes_raw()[:7]}..."
 
 
 class EdKeyPair:
@@ -71,7 +71,7 @@ class EdKeyPair:
             self.public_key = self.private_key.public_key()
 
     def __str__(self):
-        return f"Private key: {self.private_key}\nPublic key: {self.public_key}"
+        return f"Private key: {self.private_key.private_bytes_raw()[:7]}... || Public key: {self.public_key.public_bytes_raw()[:7]}..."
 
 
 @dataclass
@@ -97,6 +97,29 @@ class PrivateKey(KeyBase):
     """
 
 
+@dataclass
+class Publishable:
+    """
+    Publishable data.
+    """
+
+    identity_key: PublicKey
+    signed_prekey: PublicKey
+    prekey_signature: bytes
+    one_time_prekeys: List[PublicKey]
+
+
+def deserialise_publish(data: bytes) -> Publishable:
+    """
+    Deserialise the data to be published.
+    """
+    identity_key = PublicKey(data[:32])
+    signed_prekey = PublicKey(data[32:64])
+    prekey_signature = data[64:96]
+    one_time_prekeys = [PublicKey(data[i : i + 32]) for i in range(96, len(data), 32)]
+    return identity_key, signed_prekey, prekey_signature, one_time_prekeys
+
+
 class Server:
     """
     The server handling all connections and messages between clients.
@@ -110,7 +133,7 @@ class Server:
 
         identity_key: PublicKey
         signed_prekey: PublicKey
-        prekey_signature: str
+        prekey_signature: bytes
         one_time_prekeys: Set[PublicKey]
 
     @dataclass
@@ -126,6 +149,28 @@ class Server:
     def __init__(self):
         self.clients: Dict[PublicKey, Server.ClientData] = {}
         self.message_queue: Server.Message = deque([])
+
+    def recv(self, data: bytes) -> None:
+        """
+        Receive data from a client.
+        """
+        identity_key, signed_prekey, prekey_signature, one_time_prekeys = (
+            self.__deserialise_publish(data)
+        )
+        self.clients[identity_key] = Server.ClientData(
+            identity_key=identity_key,
+            signed_prekey=signed_prekey,
+            prekey_signature=prekey_signature,
+            one_time_prekeys=one_time_prekeys,
+        )
+
+    def __deserialise_publish(
+        self, data: bytes
+    ) -> Tuple[PublicKey, PublicKey, str, List[PublicKey]]:
+        """
+        Deserialise the data to be published.
+        """
+        return deserialise_publish(data)
 
 
 class Client:
@@ -146,8 +191,8 @@ class Client:
         identity_key: XKeyPair
         ephemeral_key: XKeyPair
         signed_prekey: XKeyPair
-        prekey_signature: str
-        one_time_prekeys: Set[XKeyPair]
+        prekey_signature: bytes
+        one_time_prekeys: List[XKeyPair]
         shared_secret_key: KeyBase
 
     def __init__(
@@ -156,6 +201,7 @@ class Client:
         curve: Curve = Curve.Curve25519,
         hash_type: HashType = HashType.SHA256,
         info: str = "MyProtocol",
+        num_one_time_prekeys: int = 10,
     ):
         logging.debug(XKeyPair(curve))
         self.client = Client.Client(
@@ -167,41 +213,77 @@ class Client:
             ephemeral_key=None,
             signed_prekey=EdKeyPair(curve),
             prekey_signature=None,
-            one_time_prekeys=set(),
+            one_time_prekeys=[],
             shared_secret_key=None,
         )
+        self.num_one_time_prekeys = num_one_time_prekeys
 
-    def encode(self, pk: PublicKey):
+    def __generate_one_time_prekeys(self, n: int) -> None:
         """
-        Converts public key to a byte sequence. A single-byte constant is used
-        to represent the type of curve, followed by little-endian encoding
-        of the u-coordinate.
+        Generate n one-time prekeys.
         """
-        return
+        keys = []
+        while n > 0:
+            keys.append(XKeyPair(self.client.curve))
+            n -= 1
+        return keys
 
     def publish(self, server: Server) -> None:
         """
         Publishes the client's identity key and prekeys to the server.
         """
-        prekey_signature = self.client.signed_prekey.private_key.sign(
-            f"{self.client.identity_key.public_key}".encode()
+        # generate a prekey signature from the given signed prekey
+        message = f"{self.client.identity_key.public_key}".encode()
+        self.client.prekey_signature = self.client.signed_prekey.private_key.sign(
+            message
         )
-        logging.debug(prekey_signature)
+        logging.debug("Prekey signature: %s", self.client.prekey_signature)
         # verify
         try:
             self.client.signed_prekey.public_key.verify(
-                prekey_signature,
-                f"{
-                    self.client.identity_key.public_key}".encode(),
+                self.client.prekey_signature, message
             )
         except InvalidSignature:
             logging.error("Invalid signature")
 
-        server.recv(
-            self.identity_key,
-            self.signed_prekey,
-            self.prekey_signature,
-            self.one_time_prekeys,
+        # generate one-time prekeys
+        self.client.one_time_prekeys += self.__generate_one_time_prekeys(
+            self.num_one_time_prekeys
+        )
+
+        # store the client's public keys on the server
+        logging.debug(
+            "%s %s %s %s",
+            len(self.client.identity_key.public_key.public_bytes_raw()),
+            len(self.client.signed_prekey.public_key.public_bytes_raw()),
+            len(self.client.prekey_signature),
+            len(self.client.one_time_prekeys),
+        )
+        serialised = self.__serialise_publish(
+            self.client.identity_key.public_key,
+            self.client.signed_prekey.public_key,
+            self.client.prekey_signature,
+            self.client.one_time_prekeys,
+        )
+        server.recv(serialised)
+
+    def __serialise_publish(
+        self,
+        identity_key: PublicKey,
+        signed_prekey: PublicKey,
+        prekey_signature: bytes,
+        one_time_prekeys: List[PublicKey],
+    ) -> bytes:
+        """
+        Serialise the data to be published.
+        """
+        return "".join(
+            [
+                identity_key.public_bytes_raw(),
+                signed_prekey.public_bytes_raw(),
+                prekey_signature,
+                "".join([key.public_bytes_raw() for key in one_time_prekeys]),
+            ]
         )
 
 
