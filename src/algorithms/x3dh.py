@@ -2,6 +2,19 @@ from enum import Enum, auto
 from collections import deque
 from typing import Dict, Set
 from dataclasses import dataclass
+from cryptography.hazmat.primitives.asymmetric.x25519 import (
+    X25519PrivateKey,
+    X25519PublicKey,
+)
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+    Ed25519PrivateKey,
+    Ed25519PublicKey,
+)
+from cryptography.hazmat.primitives.asymmetric.x448 import X448PrivateKey, X448PublicKey
+from cryptography.hazmat.primitives.asymmetric.ed448 import (
+    Ed448PrivateKey,
+    Ed448PublicKey,
+)
 
 
 class Curve(Enum):
@@ -9,8 +22,8 @@ class Curve(Enum):
     Types of curves.
     """
 
-    X25519 = auto()
-    X448 = auto()
+    Curve25519 = auto()
+    Curve448 = auto()
 
 
 class HashType(Enum):
@@ -22,36 +35,40 @@ class HashType(Enum):
     SHA512 = auto()
 
 
-class KeyPair:
+class XKeyPair:
     """
     Keypair.
     """
 
-    def __init__(self, curve: Curve = Curve.X25519):
-        self.public_key: PublicKey
-        self.private_key: PrivateKey
-        return
+    def __init__(self, curve: Curve = Curve.Curve25519):
+        self.curve = curve
+        if curve == Curve.Curve25519:
+            self.private_key = X25519PrivateKey.generate()
+            self.public_key = self.private_key.public_key()
+        elif curve == Curve.Curve448:
+            self.private_key = X448PrivateKey.generate()
+            self.public_key = self.private_key.public_key()
 
-    def generate(self):
-        return
-
-
-def decodeLittleEndian(b, bits):
-    """ """
-    return sum([b[i] << 8 * i for i in range((bits + 7) / 8)])
-
-
-def decodeUCoordinate(u, bits):
-    u_list = [ord(b) for b in u]
-    # Ignore any unused bits.
-    if bits % 8:
-        u_list[-1] &= (1 << (bits % 8)) - 1
-    return decodeLittleEndian(u_list, bits)
+    def __str__(self):
+        return f"Private key: {self.private_key}\nPublic key: {self.public_key}"
 
 
-def encodeUCoordinate(u, bits):
-    u = u % p
-    return "".join([chr((u >> 8 * i) & 0xFF) for i in range((bits + 7) / 8)])
+class EdKeyPair:
+    """
+    Keypair.
+    """
+
+    def __init__(self, curve: Curve = Curve.Curve25519):
+        self.curve = curve
+        if curve == Curve.Curve25519:
+            self.private_key = Ed25519PrivateKey.generate()
+            self.public_key = self.private_key.public_key()
+        elif curve == Curve.Curve448:
+            self.private_key = Ed448PrivateKey.generate()
+            self.public_key = self.private_key.public_key()
+
+    def __str__(self):
+        return f"Private key: {self.private_key}\nPublic key: {self.public_key}"
 
 
 @dataclass
@@ -123,27 +140,30 @@ class Client:
         curve: Curve
         hash: HashType
         info: str
-        identity_key: KeyPair
-        ephemeral_key: KeyPair
-        signed_prekey: KeyPair
-        one_time_prekeys: Set[KeyPair]
+        identity_key: XKeyPair
+        ephemeral_key: XKeyPair
+        signed_prekey: XKeyPair
+        prekey_signature: str
+        one_time_prekeys: Set[XKeyPair]
         shared_secret_key: KeyBase
 
     def __init__(
         self,
         name: str,
-        curve: Curve = Curve.X25519,
+        curve: Curve = Curve.Curve25519,
         hash_type: HashType = HashType.SHA256,
         info: str = "MyProtocol",
     ):
-        self.data = Client.Client(
+        print(XKeyPair(curve))
+        self.client = Client.Client(
             name=name,
             curve=curve,
             hash=hash_type,
             info=info,
-            identity_key=KeyPair(curve),
-            ephemeral_key=KeyPair(curve),
-            signed_prekey=KeyPair(curve),
+            identity_key=XKeyPair(curve),
+            ephemeral_key=None,
+            signed_prekey=EdKeyPair(curve),
+            prekey_signature=None,
             one_time_prekeys=set(),
             shared_secret_key=None,
         )
@@ -156,12 +176,20 @@ class Client:
         """
         return
 
-    def publish(self, server: Server):
+    def publish(self, server: Server) -> None:
         """
         Publishes the client's identity key and prekeys to the server.
         """
-
-        return
+        prekey_signature = self.client.signed_prekey.private_key.sign(
+            f"{self.client.identity_key.public_key}".encode()
+        )
+        print(prekey_signature)
+        server.recv(
+            self.identity_key,
+            self.signed_prekey,
+            self.prekey_signature,
+            self.one_time_prekeys,
+        )
 
 
 class X3DH:
