@@ -1,3 +1,5 @@
+import logging
+
 from enum import Enum, auto
 from collections import deque
 from typing import Dict, Set
@@ -15,6 +17,7 @@ from cryptography.hazmat.primitives.asymmetric.ed448 import (
     Ed448PrivateKey,
     Ed448PublicKey,
 )
+from cryptography.exceptions import InvalidSignature
 
 
 class Curve(Enum):
@@ -154,7 +157,7 @@ class Client:
         hash_type: HashType = HashType.SHA256,
         info: str = "MyProtocol",
     ):
-        print(XKeyPair(curve))
+        logging.debug(XKeyPair(curve))
         self.client = Client.Client(
             name=name,
             curve=curve,
@@ -183,7 +186,17 @@ class Client:
         prekey_signature = self.client.signed_prekey.private_key.sign(
             f"{self.client.identity_key.public_key}".encode()
         )
-        print(prekey_signature)
+        logging.debug(prekey_signature)
+        # verify
+        try:
+            self.client.signed_prekey.public_key.verify(
+                prekey_signature,
+                f"{
+                    self.client.identity_key.public_key}".encode(),
+            )
+        except InvalidSignature:
+            logging.error("Invalid signature")
+
         server.recv(
             self.identity_key,
             self.signed_prekey,
