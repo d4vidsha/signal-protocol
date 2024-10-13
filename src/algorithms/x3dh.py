@@ -1,5 +1,7 @@
-from enum import Enum
+from enum import Enum, auto
 from collections import deque
+from typing import Dict, Set
+from dataclasses import dataclass
 
 
 class Curve(Enum):
@@ -7,8 +9,8 @@ class Curve(Enum):
     Types of curves.
     """
 
-    X25519 = 0
-    X448 = 1
+    X25519 = auto()
+    X448 = auto()
 
 
 class HashType(Enum):
@@ -16,8 +18,8 @@ class HashType(Enum):
     Types of hashes.
     """
 
-    SHA256 = 0
-    SHA512 = 1
+    SHA256 = auto()
+    SHA512 = auto()
 
 
 class KeyPair:
@@ -25,7 +27,12 @@ class KeyPair:
     Keypair.
     """
 
-    def __init__(self):
+    def __init__(self, curve: Curve = Curve.X25519):
+        self.public_key: PublicKey
+        self.private_key: PrivateKey
+        return
+
+    def generate(self):
         return
 
 
@@ -47,13 +54,58 @@ def encodeUCoordinate(u, bits):
     return "".join([chr((u >> 8 * i) & 0xFF) for i in range((bits + 7) / 8)])
 
 
+@dataclass
+class KeyBase:
+    """
+    Public key.
+    """
+
+    value: str
+
+
+@dataclass
+class PublicKey(KeyBase):
+    """
+    Private key.
+    """
+
+
+@dataclass
+class PrivateKey(KeyBase):
+    """
+    Private key.
+    """
+
+
 class Server:
     """
     The server handling all connections and messages between clients.
     """
 
+    @dataclass
+    class ClientData:
+        """
+        What the server stores about a single client.
+        """
+
+        identity_key: PublicKey
+        signed_prekey: PublicKey
+        prekey_signature: str
+        one_time_prekeys: Set[PublicKey]
+
+    @dataclass
+    class Message:
+        """
+        A message from one client to another.
+        """
+
+        sender: PublicKey
+        receiver: PublicKey
+        ciphertext: str
+
     def __init__(self):
-        self.message_queue = deque([])
+        self.clients: Dict[PublicKey, Server.ClientData] = {}
+        self.message_queue: Server.Message = deque([])
 
 
 class Client:
@@ -61,23 +113,40 @@ class Client:
     The client which can send and receive messages.
     """
 
+    @dataclass
+    class Client:
+        """
+        The client's data.
+        """
+
+        name: str
+        curve: Curve
+        hash: HashType
+        info: str
+        identity_key: KeyPair
+        ephemeral_key: KeyPair
+        signed_prekey: KeyPair
+        one_time_prekeys: Set[KeyPair]
+        shared_secret_key: KeyBase
+
     def __init__(
         self,
         name: str,
-        server: Server,
         curve: Curve = Curve.X25519,
         hash_type: HashType = HashType.SHA256,
         info: str = "MyProtocol",
     ):
-        self.name = name
-        self.curve: Curve = curve
-        self.hash: HashType = hash_type
-        self.info: str = info
-        self.ik = KeyPair()
-        self.ek = KeyPair()
-        self.spk = KeyPair()
-        self.opk = KeyPair()
-        self.mk = KeyPair()
+        self.data = Client.Client(
+            name=name,
+            curve=curve,
+            hash=hash_type,
+            info=info,
+            identity_key=KeyPair(curve),
+            ephemeral_key=KeyPair(curve),
+            signed_prekey=KeyPair(curve),
+            one_time_prekeys=set(),
+            shared_secret_key=None,
+        )
 
     def encode(self, pk: PublicKey):
         """
@@ -87,9 +156,12 @@ class Client:
         """
         return
 
-    def publish(self, server: Server = None):
-        if server == None:
-            ...
+    def publish(self, server: Server):
+        """
+        Publishes the client's identity key and prekeys to the server.
+        """
+
+        return
 
 
 class X3DH:
