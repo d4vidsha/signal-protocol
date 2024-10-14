@@ -86,7 +86,7 @@ class KeyBase:
 @dataclass
 class PublicKey(KeyBase):
     """
-    Private key.
+    Public key.
     """
 
 
@@ -98,14 +98,44 @@ class PrivateKey(KeyBase):
 
 
 @dataclass
-class Publishable:
+class BundleBase:
+    """
+    A bundle.
+    """
+
+    identity_key: Ed25519PublicKey
+    signed_prekey: Ed25519PublicKey
+    prekey_signature: bytes
+
+
+@dataclass
+class Publishable(BundleBase):
     """
     Publishable data.
     """
 
-    identity_key: PublicKey
-    signed_prekey: PublicKey
-    prekey_signature: bytes
+    one_time_prekeys: List[Ed25519PublicKey]
+
+    def __repr__(self) -> str:
+        """
+        The representation is going to be the first byte of every key in
+        publishable.
+        """
+        representation = bytearray()
+        representation.extend(self.identity_key.public_bytes_raw()[0:1])
+        representation.extend(self.signed_prekey.public_bytes_raw()[0:1])
+        representation.extend(self.prekey_signature[0:1])
+        for key in self.one_time_prekeys:
+            representation.extend(key.public_bytes_raw()[0:1])
+        return str(bytes(representation))
+
+
+@dataclass
+class PrekeyBundle(BundleBase):
+    """
+    A prekey bundle.
+    """
+
     one_time_prekeys: List[PublicKey]
 
 
@@ -113,11 +143,27 @@ def deserialise_publish(data: bytes) -> Publishable:
     """
     Deserialise the data to be published.
     """
-    identity_key = PublicKey(data[:32])
-    signed_prekey = PublicKey(data[32:64])
+    identity_key = Ed25519PublicKey.from_public_bytes(data[:32])
+    signed_prekey = Ed25519PublicKey.from_public_bytes(data[32:64])
     prekey_signature = data[64:96]
-    one_time_prekeys = [PublicKey(data[i : i + 32]) for i in range(96, len(data), 32)]
-    return identity_key, signed_prekey, prekey_signature, one_time_prekeys
+    one_time_prekeys = [
+        Ed25519PublicKey.from_public_bytes(data[i : i + 32])
+        for i in range(96, len(data), 32)
+    ]
+    return Publishable(identity_key, signed_prekey, prekey_signature, one_time_prekeys)
+
+
+def serialise_publish(publishable: Publishable) -> bytes:
+    """
+    Serialise the data to be published.
+    """
+    serialised = bytearray()
+    serialised.extend(publishable.identity_key.value)
+    serialised.extend(publishable.signed_prekey.value)
+    serialised.extend(publishable.prekey_signature)
+    for key in publishable.one_time_prekeys:
+        serialised.extend(key.value)
+    return bytes(serialised)
 
 
 class Server:
@@ -147,30 +193,44 @@ class Server:
         ciphertext: str
 
     def __init__(self):
-        self.clients: Dict[PublicKey, Server.ClientData] = {}
+        self.clients: Dict[bytes, Server.ClientData] = {}
         self.message_queue: Server.Message = deque([])
 
     def recv(self, data: bytes) -> None:
         """
         Receive data from a client.
         """
-        identity_key, signed_prekey, prekey_signature, one_time_prekeys = (
-            self.__deserialise_publish(data)
-        )
-        self.clients[identity_key] = Server.ClientData(
+        publishable = self.__deserialise_publish(data)
+        logging.debug("Publishable: %s", publishable)
+        identity_key = publishable.identity_key
+        signed_prekey = publishable.signed_prekey
+        prekey_signature = publishable.prekey_signature
+        one_time_prekeys = publishable.one_time_prekeys
+        self.clients[identity_key.public_bytes_raw()] = Server.ClientData(
             identity_key=identity_key,
             signed_prekey=signed_prekey,
             prekey_signature=prekey_signature,
             one_time_prekeys=one_time_prekeys,
         )
 
-    def __deserialise_publish(
-        self, data: bytes
-    ) -> Tuple[PublicKey, PublicKey, str, List[PublicKey]]:
+    def __deserialise_publish(self, data: bytes) -> Publishable:
         """
         Deserialise the data to be published.
         """
         return deserialise_publish(data)
+
+    def get_bundle(self, client: Client) -> PrekeyBundle:
+        """
+        Get a prekey bundle for a clinet.
+        """
+        # TODO: implment this
+        self.clients[client.client.identity_key.public_key]
+        # return PrekeyBundle(
+        #     identity_key=,
+        #     signed_prekey=,
+        #     prekey_signature=,
+        #     one_time_prekeys=,
+        # )
 
 
 class Client:
@@ -277,14 +337,21 @@ class Client:
         """
         Serialise the data to be published.
         """
-        return "".join(
-            [
-                identity_key.public_bytes_raw(),
-                signed_prekey.public_bytes_raw(),
-                prekey_signature,
-                "".join([key.public_bytes_raw() for key in one_time_prekeys]),
-            ]
-        )
+        serialised = bytearray()
+        serialised.extend(identity_key.public_bytes_raw())
+        serialised.extend(signed_prekey.public_bytes_raw())
+        serialised.extend(prekey_signature)
+        for key in one_time_prekeys:
+            serialised.extend(key.public_key.public_bytes_raw())
+        return bytes(serialised)
+
+    def fetch(self, server: Server, client: Client) -> None:
+        """
+        Fetches the prekey bundle from the server.
+        """
+        prekey_bundle = server.get_bundle(client)
+        logging.debug("Prekey bundle: %s", prekey_bundle)
+        self.client.ephemeral_key = XKeyPair(self.client.curve)
 
 
 class X3DH:
