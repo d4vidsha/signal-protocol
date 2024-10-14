@@ -78,10 +78,6 @@ class DoubleRachet():
         return shared_secret
 
     def KDF_RK(self, rk, dh_out):
-        if isinstance(rk, str):
-            rk = rk.encode('utf-8')
-        elif not isinstance(rk, bytes):
-            rk = str(rk).encode('utf-8')
         hkdf = HKDF(
             algorithm=hashes.SHA256(),
             length=64, 
@@ -89,12 +85,14 @@ class DoubleRachet():
             info=b'info', 
             backend=default_backend())
         derived_key = hkdf.derive(dh_out)
-        return derived_key[:32], derived_key[32:]
+        receive_chain_key = derived_key[:32]
+        send_chain_key = derived_key[32:]
+        return receive_chain_key, send_chain_key
     
     def KDF_CK(self, ck):
-        new_ck = hashlib.sha256(ck).digest()
-        mk = hashlib.sha256(new_ck).digest()
-        return new_ck, mk
+        message_key = hmac.new(ck, b'\x01', hashlib.sha256).digest()
+        next_chain_key = hmac.new(ck, b'\x02', hashlib.sha256).digest()
+        return next_chain_key, message_key
 
     def derive_nonce(self, key, length):
         hkdf = HKDF(
@@ -200,8 +198,11 @@ class DoubleRachet():
         self.DHr = header.dh
         self.RK, self.CKr = self.KDF_RK(self.RK, self.DH(self.DHs, self.DHr))
         # Remove following update if you do not want to generate a new DH key pair like auto update of the DH key pair
-        # self.DHs = self.generateDH()
-        # self.RK, self.CKs = self.KDF_RK(self.RK, self.DH(self.DHs, self.DHr))
+        self.DHs = self.generateDH()
+        self.RK, self.CKs = self.KDF_RK(self.RK, self.DH(self.DHs, self.DHr))
+        self.PN = self.Ns
+        self.Ns = 0
+        self.Nr = 0
 
     def HMAC_SHA256(self, key, data):
         return hmac.new(key, data, hashlib.sha256).digest()
@@ -233,7 +234,6 @@ def main():
     print(f"Bob received: {decrypted_message}")
 
     # Bob generate new DH key and sends a message
-    bob.generateNewDH()
     message = b"Hello Alice!"
     ad = b"Associated data"
     header, ciphertext = bob.RatchetEncrypt(message, ad)
@@ -243,7 +243,6 @@ def main():
     print(f"Alice received: {decrypted_message}")
 
     # Alice generates a new DH key pair and send a message
-    alice.generateNewDH()
     message = b"Hello Bob! Again"
     ad = b"Associated data"
     header, ciphertext = alice.RatchetEncrypt(message, ad)
@@ -286,7 +285,6 @@ def main():
     ad2 = b"Associated data 2"
     header2, ciphertext2 = bob.RatchetEncrypt(message2, ad2)
 
-    bob.generateDH()
     message3 = b"Out of order message 3"
     ad3 = b"Associated data 3"
     header3, ciphertext3 = bob.RatchetEncrypt(message3, ad3)
