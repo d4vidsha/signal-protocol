@@ -414,7 +414,7 @@ class Client:
         eka = self.client.ephemeral_key.public_key.public_bytes_raw()
         message.extend(ika)
         message.extend(eka)
-        message.extend(otpkb)
+        message.extend(otpkb.public_bytes_raw())
 
         chacha = ChaCha20Poly1305(self.client.shared_secret_key)
         nonce = os.urandom(12)
@@ -424,6 +424,9 @@ class Client:
         message.extend(ciphertext)
         message = bytes(message)
         logging.debug("Message: %s", message)
+
+        # send the message to the server
+        server.initial_messages[client] = message
 
         logging.debug("Deleting ephemeral key...")
         self.client.ephemeral_key = None
