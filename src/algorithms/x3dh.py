@@ -1,3 +1,4 @@
+import os
 import logging
 
 from enum import Enum, auto
@@ -20,6 +21,7 @@ from cryptography.hazmat.primitives.asymmetric.ed448 import (
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 
 
 class Curve(Enum):
@@ -175,19 +177,20 @@ class Server:
         prekey_signature: bytes
         one_time_prekeys: deque[PublicKey]
 
-    @dataclass
-    class Message:
-        """
-        A message from one client to another.
-        """
+    # @dataclass
+    # class Message:
+    #     """
+    #     A message from one client to another.
+    #     """
 
-        sender: PublicKey
-        receiver: PublicKey
-        ciphertext: str
+    #     sender: PublicKey
+    #     receiver: PublicKey
+    #     ciphertext: str
 
     def __init__(self):
         self.clients: Dict[bytes, Server.ClientData] = {}
-        self.message_queue: Server.Message = deque([])
+        # self.message_queue: deque[Server.Message] = deque([])
+        self.initial_messages: Dict[bytes, bytes] = {}
 
     def recv(self, data: bytes) -> None:
         """
@@ -212,7 +215,7 @@ class Server:
         """
         return deserialise_publish(data)
 
-    def get_bundle(self, client: str) -> PrekeyBundle:
+    def get_bundle(self, client: bytes) -> PrekeyBundle:
         """
         Get a prekey bundle for a clinet.
         """
@@ -285,6 +288,24 @@ class Client:
             n -= 1
         return keys
 
+    def __serialise_publish(
+        self,
+        identity_key: PublicKey,
+        signed_prekey: PublicKey,
+        prekey_signature: bytes,
+        one_time_prekeys: List[PublicKey],
+    ) -> bytes:
+        """
+        Serialise the data to be published.
+        """
+        serialised = bytearray()
+        serialised.extend(identity_key.public_bytes_raw())
+        serialised.extend(signed_prekey.public_bytes_raw())
+        serialised.extend(prekey_signature)
+        for key in one_time_prekeys:
+            serialised.extend(key.public_key.public_bytes_raw())
+        return bytes(serialised)
+
     def publish(self, server: Server) -> None:
         """
         Publishes the client's identity key and prekeys to the server.
@@ -295,22 +316,22 @@ class Client:
             message
         )
         logging.debug("Prekey signature: %s", self.client.prekey_signature)
-        # verify
-        try:
-            self.client.signed_prekey.public_key.verify(
-                self.client.prekey_signature, message
-            )
-            logging.debug("Signature verified with message: %s", message)
-            logging.debug(
-                "Signature verified with prekey signature: %s",
-                self.client.prekey_signature,
-            )
-            logging.debug(
-                "Signature verified with signed prekey: %s",
-                self.client.signed_prekey.public_key.public_bytes_raw(),
-            )
-        except InvalidSignature:
-            logging.error("Invalid signature")
+        # # verify
+        # try:
+        #     self.client.signed_prekey.public_key.verify(
+        #         self.client.prekey_signature, message
+        #     )
+        #     logging.debug("Signature verified with message: %s", message)
+        #     logging.debug(
+        #         "Signature verified with prekey signature: %s",
+        #         self.client.prekey_signature,
+        #     )
+        #     logging.debug(
+        #         "Signature verified with signed prekey: %s",
+        #         self.client.signed_prekey.public_key.public_bytes_raw(),
+        #     )
+        # except InvalidSignature:
+        #     logging.error("Invalid signature")
 
         # generate one-time prekeys
         self.client.one_time_prekeys += self.__generate_one_time_prekeys(
@@ -333,31 +354,11 @@ class Client:
         )
         server.recv(serialised)
 
-    def __serialise_publish(
-        self,
-        identity_key: PublicKey,
-        signed_prekey: PublicKey,
-        prekey_signature: bytes,
-        one_time_prekeys: List[PublicKey],
-    ) -> bytes:
-        """
-        Serialise the data to be published.
-        """
-        serialised = bytearray()
-        serialised.extend(identity_key.public_bytes_raw())
-        serialised.extend(signed_prekey.public_bytes_raw())
-        serialised.extend(prekey_signature)
-        for key in one_time_prekeys:
-            serialised.extend(key.public_key.public_bytes_raw())
-        return bytes(serialised)
-
-    def fetch(self, server: Server, client: Client) -> None:
+    def send_initial_message(self, server: Server, client: bytes) -> None:
         """
         Fetches the prekey bundle from the server and stores the secret key.
         """
-        prekey_bundle = server.get_bundle(
-            client.client.identity_key.public_key.public_bytes_raw()
-        )
+        prekey_bundle = server.get_bundle(client)
         logging.debug("Prekey bundle: %s", prekey_bundle)
         spkb = X25519PublicKey.from_public_bytes(
             prekey_bundle.signed_prekey.public_bytes_raw()
@@ -396,8 +397,33 @@ class Client:
             salt=None,
             info=self.client.info.encode(),
         )
-        self.client.shared_secret_key = hkdf.derive(bytes(sk))
-        logging.debug("Shared secret key: %s", self.client.shared_secret_key)
+        sk = hkdf.derive(bytes(sk))
+        self.client.shared_secret_key = sk
+        logging.debug("Shared secret key: %s", sk)
+
+        # create associated data byte sequence
+        logging.info("Creating associated data byte sequence...")
+        ad = bytearray()
+        ad.extend(self.client.identity_key.public_key.public_bytes_raw())
+        ad.extend(ikb.public_bytes_raw())
+        ad = bytes(ad)
+        logging.debug("Associated data byte sequence: %s", ad)
+
+        message = bytearray()
+        ika = self.client.identity_key.public_key.public_bytes_raw()
+        eka = self.client.ephemeral_key.public_key.public_bytes_raw()
+        message.extend(ika)
+        message.extend(eka)
+        message.extend(otpkb)
+
+        chacha = ChaCha20Poly1305(self.client.shared_secret_key)
+        nonce = os.urandom(12)
+        data = "Hello Bob!".encode()
+        ciphertext = chacha.encrypt(nonce, data, ad)
+
+        message.extend(ciphertext)
+        message = bytes(message)
+        logging.debug("Message: %s", message)
 
         logging.debug("Deleting ephemeral key...")
         self.client.ephemeral_key = None
@@ -422,8 +448,8 @@ class X3DH:
 
         # alice fetches a "prekey bundle" from the server, and uses it to send
         # an initial message to bob
-        self.alice.fetch(self.server, self.bob)
-        self.alice.send(self.server, self.bob)
+        ikb = self.bob.client.identity_key.public_key.public_bytes_raw()
+        self.alice.send_initial_message(self.server, ikb)
 
         # bob receives and processes alice's initial message
         sk = self.bob.recv(self.server)
