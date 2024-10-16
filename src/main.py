@@ -45,7 +45,6 @@ def main():
     # establish connection between alice and bob (x3dh)
     x3dh = X3DH(server, alice, bob)
     sk = x3dh.run()
-    print(sk)
 
     # send messages between alice and bob (double ratchet)
     # alice.send("Hello world!")

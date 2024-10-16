@@ -252,7 +252,7 @@ class Client:
         ephemeral_key: XKeyPair
         signed_prekey: XKeyPair
         prekey_signature: bytes
-        one_time_prekeys: List[XKeyPair]
+        one_time_prekeys: Dict[bytes, XKeyPair]
         shared_secret_key: bytes
 
     def __init__(
@@ -273,7 +273,7 @@ class Client:
             ephemeral_key=None,
             signed_prekey=EdKeyPair(curve),
             prekey_signature=None,
-            one_time_prekeys=[],
+            one_time_prekeys={},
             shared_secret_key=None,
         )
         self.num_one_time_prekeys = num_one_time_prekeys
@@ -282,9 +282,10 @@ class Client:
         """
         Generate n one-time prekeys.
         """
-        keys = []
+        keys = {}
         while n > 0:
-            keys.append(XKeyPair(self.client.curve))
+            keypair = XKeyPair(self.client.curve)
+            keys[keypair.public_key.public_bytes_raw()] = keypair
             n -= 1
         return keys
 
@@ -293,7 +294,7 @@ class Client:
         identity_key: PublicKey,
         signed_prekey: PublicKey,
         prekey_signature: bytes,
-        one_time_prekeys: List[PublicKey],
+        one_time_prekeys: Dict[bytes, PublicKey],
     ) -> bytes:
         """
         Serialise the data to be published.
@@ -303,7 +304,7 @@ class Client:
         serialised.extend(signed_prekey.public_bytes_raw())
         serialised.extend(prekey_signature)
         for key in one_time_prekeys:
-            serialised.extend(key.public_key.public_bytes_raw())
+            serialised.extend(one_time_prekeys[key].public_key.public_bytes_raw())
         return bytes(serialised)
 
     def publish(self, server: Server) -> None:
@@ -334,8 +335,8 @@ class Client:
         #     logging.error("Invalid signature")
 
         # generate one-time prekeys
-        self.client.one_time_prekeys += self.__generate_one_time_prekeys(
-            self.num_one_time_prekeys
+        self.client.one_time_prekeys.update(
+            self.__generate_one_time_prekeys(self.num_one_time_prekeys)
         )
 
         # store the client's public keys on the server
@@ -399,10 +400,10 @@ class Client:
         )
         sk = hkdf.derive(bytes(sk))
         self.client.shared_secret_key = sk
-        logging.debug("Shared secret key: %s", sk)
+        logging.info("Shared secret key on Alice: %s", sk)
 
         # create associated data byte sequence
-        logging.info("Creating associated data byte sequence...")
+        logging.debug("Creating associated data byte sequence...")
         ad = bytearray()
         ad.extend(self.client.identity_key.public_key.public_bytes_raw())
         ad.extend(ikb.public_bytes_raw())
@@ -414,7 +415,8 @@ class Client:
         eka = self.client.ephemeral_key.public_key.public_bytes_raw()
         message.extend(ika)
         message.extend(eka)
-        message.extend(otpkb.public_bytes_raw())
+        if otpkb is not None:
+            message.extend(otpkb.public_bytes_raw())
 
         chacha = ChaCha20Poly1305(self.client.shared_secret_key)
         nonce = os.urandom(12)
@@ -423,13 +425,68 @@ class Client:
 
         message.extend(ciphertext)
         message = bytes(message)
-        logging.debug("Message: %s", message)
+        logging.debug("Sending message: %s", message)
+        logging.debug("Message length: %s", len(message))
 
         # send the message to the server
         server.initial_messages[client] = message
 
         logging.debug("Deleting ephemeral key...")
         self.client.ephemeral_key = None
+
+    def recv_initial_message(self, server: Server) -> bytes:
+        """
+        Receive the initial message from the server.
+        """
+        message = server.initial_messages[
+            self.client.identity_key.public_key.public_bytes_raw()
+        ]
+        logging.debug("Received message: %s", message)
+
+        # get the public keys from the message
+        if self.client.curve == Curve.Curve25519:
+            ika = X25519PublicKey.from_public_bytes(message[:32])
+            eka = X25519PublicKey.from_public_bytes(message[32:64])
+        if len(message) == 122:
+            otpkb = self.client.one_time_prekeys[message[64:96]]
+        elif len(message) == 90:
+            otpkb = None
+        else:
+            raise ValueError("Invalid message length")
+
+        # perform the Diffie-Hellman key exchanges
+        sk = bytearray()
+        if self.client.curve == Curve.Curve25519:
+            spkb = X25519PrivateKey.from_private_bytes(
+                self.client.signed_prekey.private_key.private_bytes_raw()
+            )
+        elif self.client.curve == Curve.Curve448:
+            spkb = X448PrivateKey.from_private_bytes(
+                self.client.signed_prekey.private_key.private_bytes_raw()
+            )
+        else:
+            raise ValueError("Invalid curve")
+        dh1 = spkb.exchange(ika)
+        dh2 = self.client.identity_key.private_key.exchange(eka)
+        dh3 = spkb.exchange(eka)
+        sk.extend(dh1)
+        sk.extend(dh2)
+        sk.extend(dh3)
+        if otpkb is not None:
+            dh4 = otpkb.private_key.exchange(eka)
+            sk.extend(dh4)
+
+        hkdf = HKDF(
+            algorithm=self.client.hash,
+            length=32,
+            salt=None,
+            info=self.client.info.encode(),
+        )
+        sk = hkdf.derive(bytes(sk))
+        self.client.shared_secret_key = sk
+        logging.info("Shared secret key on Bob:   %s", sk)
+
+        return sk
 
 
 class X3DH:
@@ -455,5 +512,5 @@ class X3DH:
         self.alice.send_initial_message(self.server, ikb)
 
         # bob receives and processes alice's initial message
-        sk = self.bob.recv(self.server)
+        sk = self.bob.recv_initial_message(self.server)
         return sk
