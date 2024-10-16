@@ -2,7 +2,7 @@ import logging
 
 from enum import Enum, auto
 from collections import deque
-from typing import Dict, Set, List, Tuple
+from typing import Dict, Set, List, Tuple, Optional
 from dataclasses import dataclass
 from cryptography.hazmat.primitives.asymmetric.x25519 import (
     X25519PrivateKey,
@@ -18,6 +18,8 @@ from cryptography.hazmat.primitives.asymmetric.ed448 import (
     Ed448PublicKey,
 )
 from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.primitives import hashes
 
 
 class Curve(Enum):
@@ -27,15 +29,6 @@ class Curve(Enum):
 
     Curve25519 = auto()
     Curve448 = auto()
-
-
-class HashType(Enum):
-    """
-    Types of hashes.
-    """
-
-    SHA256 = auto()
-    SHA512 = auto()
 
 
 class XKeyPair:
@@ -80,7 +73,7 @@ class KeyBase:
     Public key.
     """
 
-    value: str
+    value: bytes
 
 
 @dataclass
@@ -136,19 +129,19 @@ class PrekeyBundle(BundleBase):
     A prekey bundle.
     """
 
-    one_time_prekeys: List[PublicKey]
+    one_time_prekey: Optional[PublicKey]
 
 
 def deserialise_publish(data: bytes) -> Publishable:
     """
     Deserialise the data to be published.
     """
-    identity_key = Ed25519PublicKey.from_public_bytes(data[:32])
+    identity_key = X25519PublicKey.from_public_bytes(data[:32])
     signed_prekey = Ed25519PublicKey.from_public_bytes(data[32:64])
-    prekey_signature = data[64:96]
+    prekey_signature = data[64:128]
     one_time_prekeys = [
-        Ed25519PublicKey.from_public_bytes(data[i : i + 32])
-        for i in range(96, len(data), 32)
+        X25519PublicKey.from_public_bytes(data[i : i + 32])
+        for i in range(128, len(data), 32)
     ]
     return Publishable(identity_key, signed_prekey, prekey_signature, one_time_prekeys)
 
@@ -180,7 +173,7 @@ class Server:
         identity_key: PublicKey
         signed_prekey: PublicKey
         prekey_signature: bytes
-        one_time_prekeys: Set[PublicKey]
+        one_time_prekeys: deque[PublicKey]
 
     @dataclass
     class Message:
@@ -210,7 +203,7 @@ class Server:
             identity_key=identity_key,
             signed_prekey=signed_prekey,
             prekey_signature=prekey_signature,
-            one_time_prekeys=one_time_prekeys,
+            one_time_prekeys=deque(one_time_prekeys),
         )
 
     def __deserialise_publish(self, data: bytes) -> Publishable:
@@ -219,18 +212,22 @@ class Server:
         """
         return deserialise_publish(data)
 
-    def get_bundle(self, client: Client) -> PrekeyBundle:
+    def get_bundle(self, client: str) -> PrekeyBundle:
         """
         Get a prekey bundle for a clinet.
         """
-        # TODO: implment this
-        self.clients[client.client.identity_key.public_key]
-        # return PrekeyBundle(
-        #     identity_key=,
-        #     signed_prekey=,
-        #     prekey_signature=,
-        #     one_time_prekeys=,
-        # )
+        client_data = self.clients[client]
+        # include a one-time prekey if there are any left
+        otpk = None
+        if len(client_data.one_time_prekeys) != 0:
+            otpk = client_data.one_time_prekeys.popleft()
+        logging.debug("Prekey signature: %s", client_data.prekey_signature)
+        return PrekeyBundle(
+            identity_key=client_data.identity_key,
+            signed_prekey=client_data.signed_prekey,
+            prekey_signature=client_data.prekey_signature,
+            one_time_prekey=otpk,
+        )
 
 
 class Client:
@@ -246,20 +243,20 @@ class Client:
 
         name: str
         curve: Curve
-        hash: HashType
+        hash: hashes
         info: str
         identity_key: XKeyPair
         ephemeral_key: XKeyPair
         signed_prekey: XKeyPair
         prekey_signature: bytes
         one_time_prekeys: List[XKeyPair]
-        shared_secret_key: KeyBase
+        shared_secret_key: bytes
 
     def __init__(
         self,
         name: str,
         curve: Curve = Curve.Curve25519,
-        hash_type: HashType = HashType.SHA256,
+        hash_type: hashes = hashes.SHA256(),
         info: str = "MyProtocol",
         num_one_time_prekeys: int = 10,
     ):
@@ -293,7 +290,7 @@ class Client:
         Publishes the client's identity key and prekeys to the server.
         """
         # generate a prekey signature from the given signed prekey
-        message = f"{self.client.identity_key.public_key}".encode()
+        message = self.client.identity_key.public_key.public_bytes_raw()
         self.client.prekey_signature = self.client.signed_prekey.private_key.sign(
             message
         )
@@ -302,6 +299,15 @@ class Client:
         try:
             self.client.signed_prekey.public_key.verify(
                 self.client.prekey_signature, message
+            )
+            logging.debug("Signature verified with message: %s", message)
+            logging.debug(
+                "Signature verified with prekey signature: %s",
+                self.client.prekey_signature,
+            )
+            logging.debug(
+                "Signature verified with signed prekey: %s",
+                self.client.signed_prekey.public_key.public_bytes_raw(),
             )
         except InvalidSignature:
             logging.error("Invalid signature")
@@ -347,11 +353,54 @@ class Client:
 
     def fetch(self, server: Server, client: Client) -> None:
         """
-        Fetches the prekey bundle from the server.
+        Fetches the prekey bundle from the server and stores the secret key.
         """
-        prekey_bundle = server.get_bundle(client)
+        prekey_bundle = server.get_bundle(
+            client.client.identity_key.public_key.public_bytes_raw()
+        )
         logging.debug("Prekey bundle: %s", prekey_bundle)
+        spkb = X25519PublicKey.from_public_bytes(
+            prekey_bundle.signed_prekey.public_bytes_raw()
+        )
+        ikb = prekey_bundle.identity_key
+        otpkb = prekey_bundle.one_time_prekey
+
+        # verify the prekey signature
+        message = prekey_bundle.identity_key.public_bytes_raw()
+        logging.debug("Message: %s", message)
+        logging.debug("Prekey signature: %s", prekey_bundle.prekey_signature)
+        logging.debug(
+            "Signed prekey: %s", prekey_bundle.signed_prekey.public_bytes_raw()
+        )
+        prekey_bundle.signed_prekey.verify(prekey_bundle.prekey_signature, message)
+        logging.debug("Signature verified")
+
+        # now you can create the ephemeral key pair
         self.client.ephemeral_key = XKeyPair(self.client.curve)
+
+        # and perform the Diffie-Hellman key exchanges
+        dh1 = self.client.identity_key.private_key.exchange(spkb)
+        dh2 = self.client.ephemeral_key.private_key.exchange(ikb)
+        dh3 = self.client.ephemeral_key.private_key.exchange(spkb)
+
+        sk = bytearray()
+        sk.extend(dh1)
+        sk.extend(dh2)
+        sk.extend(dh3)
+        if otpkb is not None:
+            dh4 = self.client.ephemeral_key.private_key.exchange(otpkb)
+            sk.extend(dh4)
+        hkdf = HKDF(
+            algorithm=self.client.hash,
+            length=32,
+            salt=None,
+            info=self.client.info.encode(),
+        )
+        self.client.shared_secret_key = hkdf.derive(bytes(sk))
+        logging.debug("Shared secret key: %s", self.client.shared_secret_key)
+
+        logging.debug("Deleting ephemeral key...")
+        self.client.ephemeral_key = None
 
 
 class X3DH:
