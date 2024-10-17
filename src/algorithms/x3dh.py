@@ -265,7 +265,6 @@ class Client:
         signed_prekey: PublicKey,
         one_time_prekeys: Dict[bytes, PublicKey],
     ) -> bytes:
-        # TODO: use the serialise_publish function instead
         """
         Serialise the data to be published.
         """
