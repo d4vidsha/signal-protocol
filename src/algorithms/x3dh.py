@@ -7,6 +7,7 @@ import logging
 
 from enum import Enum, auto
 from collections import deque
+from tkinter.ttk import _Padding
 from typing import Dict, List, Optional
 from dataclasses import dataclass
 from cryptography.hazmat.primitives import serialization
@@ -16,6 +17,7 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import (
     X25519PrivateKey,
     X25519PublicKey,
 )
+from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.x448 import X448PrivateKey, X448PublicKey
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import hashes
@@ -280,28 +282,6 @@ class Client:
         """
         Publishes the client's identity key and prekeys to the server.
         """
-        # generate a prekey signature from the given signed prekey
-        # message = self.client.identity_key.public_key.public_bytes_raw()
-        # self.client.prekey_signature = self.client.identity_key.private_key.sign(
-        #     self.client.signed_prekey.public_key.public_bytes_raw()
-        # )
-        # logging.debug("Prekey signature: %s", self.client.prekey_signature)
-        # # verify
-        # try:
-        #     self.client.signed_prekey.public_key.verify(
-        #         self.client.prekey_signature, message
-        #     )
-        #     logging.debug("Signature verified with message: %s", message)
-        #     logging.debug(
-        #         "Signature verified with prekey signature: %s",
-        #         self.client.prekey_signature,
-        #     )
-        #     logging.debug(
-        #         "Signature verified with signed prekey: %s",
-        #         self.client.signed_prekey.public_key.public_bytes_raw(),
-        #     )
-        # except InvalidSignature:
-        #     logging.error("Invalid signature")
 
         # generate one-time prekeys
         self.client.one_time_prekeys.update(
@@ -322,7 +302,7 @@ class Client:
         )
         server.recv(serialised)
 
-    def send_initial_message(self, server: Server, client: bytes) -> None:
+    def send_initial_message(self, server: Server, client: bytes, recipient: bytes) -> None:
         """
         Fetches the prekey bundle from the server and stores the secret key.
         """
@@ -340,9 +320,6 @@ class Client:
         logging.debug(
             "Signed prekey: %s", prekey_bundle.signed_prekey.public_bytes_raw()
         )
-        # prekey_bundle.signed_prekey.verify(
-        #     prekey_bundle.prekey_signature, message)
-        # logging.debug("Signature verified")
 
         # now you can create the ephemeral key pair
         self.client.ephemeral_key = XKeyPair(self.client.curve)
@@ -400,7 +377,7 @@ class Client:
         logging.debug("Message length: %s", len(message))
 
         # find who is the recipient
-        with open(shared_file, "a") as f:
+        with open("/app/sharedInitialMessage.txt", "a") as f:
             f.write(f"{recipient}: {message}\n")
 
         logging.debug("Deleting ephemeral key...")
@@ -410,7 +387,7 @@ class Client:
         """
         Receive the initial message from the server.
         """
-        with open(shared_file, "r") as f:
+        with open("/app/sharedInitialMessage.txt", "r") as f:
             lines = f.readlines()
             for line in lines:
                 if line.startswith("Alice:"):
@@ -422,7 +399,7 @@ class Client:
                     logging.debug("Received message: %s", message)
                     break
         # delete the message from the shared file
-        with open(shared_file, "w") as f:
+        with open("/app/sharedInitialMessage.txt", "w") as f:
             f.write("")
 
         # get the public keys from the message
@@ -490,14 +467,18 @@ class X3DH:
         self.alice: Client = a
         self.bob: Client = b
     
-    def verify_signature(public_key, message, signature):
+    def verify_signature(public_key, message):
+        # split the message into the message and the signature
+        message = message.split(b"||")
+        message = message[0]
+        signature = message[1]
         try:
             public_key.verify(
                 signature,
                 message,
-                padding.PSS(
-                    mgf=padding.MGF1(hashes.SHA256()),
-                    salt_length=padding.PSS.MAX_LENGTH
+                _Padding.PSS(
+                    mgf=_Padding.MGF1(hashes.SHA256()),
+                    salt_length=_Padding.PSS.MAX_LENGTH
                 ),
                 hashes.SHA256()
             )
@@ -546,7 +527,7 @@ class X3DH:
                 for line in lines[last_seen:]:
                     if line.startswith("Alice:"):
                         message = line.strip().split(": ")[1]
-                        if verify_signature(alice_public_key, message, signature):
+                        if self.verify_signature(alice_public_key, message):
                             print(f"server received: {message}")
                             # send keys to the Alice
                             self.alice.send_initial_message(self.server, ika)
