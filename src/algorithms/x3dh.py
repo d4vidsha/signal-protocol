@@ -7,7 +7,7 @@ import logging
 
 from enum import Enum, auto
 from collections import deque
-from tkinter.ttk import _Padding
+import time
 from typing import Dict, List, Optional
 from dataclasses import dataclass
 from cryptography.hazmat.primitives import serialization
@@ -17,6 +17,7 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import (
     X25519PrivateKey,
     X25519PublicKey,
 )
+from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.x448 import X448PrivateKey, X448PublicKey
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
@@ -230,7 +231,7 @@ class Client:
         signed_prekey: XKeyPair
         one_time_prekeys: Dict[bytes, XKeyPair]
         shared_secret_key: bytes
-        shared_file = "/app/sharedInitialMessage.txt"
+        
 
     def __init__(
         self,
@@ -302,7 +303,7 @@ class Client:
         )
         server.recv(serialised)
 
-    def send_initial_message(self, server: Server, client: bytes, recipient: bytes) -> None:
+    def send_initial_message(self, server: Server, client: bytes) -> None:
         """
         Fetches the prekey bundle from the server and stores the secret key.
         """
@@ -376,10 +377,6 @@ class Client:
         logging.debug("Sending message: %s", message)
         logging.debug("Message length: %s", len(message))
 
-        # find who is the recipient
-        with open("/app/sharedInitialMessage.txt", "a") as f:
-            f.write(f"{recipient}: {message}\n")
-
         logging.debug("Deleting ephemeral key...")
         self.client.ephemeral_key = None
 
@@ -387,20 +384,6 @@ class Client:
         """
         Receive the initial message from the server.
         """
-        with open("/app/sharedInitialMessage.txt", "r") as f:
-            lines = f.readlines()
-            for line in lines:
-                if line.startswith("Alice:"):
-                    message = line.strip().split(": ")[1]
-                    logging.debug("Received message: %s", message)
-                    break
-                if line.startswith("Bob:"):
-                    message = line.strip().split(": ")[1]
-                    logging.debug("Received message: %s", message)
-                    break
-        # delete the message from the shared file
-        with open("/app/sharedInitialMessage.txt", "w") as f:
-            f.write("")
 
         # get the public keys from the message
         if self.client.curve == Curve.CURVE25519:
@@ -467,18 +450,22 @@ class X3DH:
         self.alice: Client = a
         self.bob: Client = b
     
-    def verify_signature(public_key, message):
-        # split the message into the message and the signature
-        message = message.split(b"||")
-        message = message[0]
-        signature = message[1]
+    def verify_signature(self, public_key, message):
+        message_parts = message.split("||")
+        if len(message_parts) != 2:
+            print("Invalid message format.")
+            return False
+
+        original_message = message_parts[0].encode()  # Convert to bytes
+        signature = bytes.fromhex(message_parts[1])    # Convert hex to bytes
+
         try:
             public_key.verify(
                 signature,
-                message,
-                _Padding.PSS(
-                    mgf=_Padding.MGF1(hashes.SHA256()),
-                    salt_length=_Padding.PSS.MAX_LENGTH
+                original_message,
+                padding.PSS(
+                    mgf=padding.MGF1(hashes.SHA256()),
+                    salt_length=padding.PSS.MAX_LENGTH
                 ),
                 hashes.SHA256()
             )
@@ -517,35 +504,42 @@ class X3DH:
                 backend=default_backend()
             )
 
-        # Print the public key or use it in your code
-        print("Bob's public key: ", bob_public_key)
-
+        last_seen = 0  # Track how many lines have been read
+        replyMessage = None
+        message = None
         while True:
-            last_seen = 0
             with open(shared_file, "r") as f:
-                lines = f.readlines()
-                for line in lines[last_seen:]:
+                lines = f.readlines()  # Read all lines in the file
+                new_lines = lines[last_seen:]  # Only process lines that haven't been read
+                
+                for line in new_lines:
                     if line.startswith("Alice:"):
-                        message = line.strip().split(": ")[1]
+                        print(f"server received from Alice: {line.strip()}")
+                        message = line.strip().split(": ")[1]  # Extract the message after "Alice:"
+                        
                         if self.verify_signature(alice_public_key, message):
                             print(f"server received: {message}")
-                            # send keys to the Alice
-                            self.alice.send_initial_message(self.server, ika)
-
-                        
+                            self.alice.send_initial_message(self.server, ikb)
+                            sk = self.bob.recv_initial_message(self.server)
+                            replyMessage = sk
+                if message:
+                    break
+                # Update last_seen to reflect the number of lines read
                 last_seen = len(lines)
             time.sleep(1)
+        print("Server received message from Alice")
+        shared_file_Alice = "/app/sharedInitialMessageAlice.txt"
+        shared_file_Bob = "/app/sharedInitialMessageBob.txt"
+        if replyMessage:
+            with open(shared_file_Alice, "w") as f:
+                f.write(f"Server: {replyMessage}\n")
+            with open(shared_file_Bob, "w") as f:
+                f.write(f"Server: {replyMessage}\n")
 
     def run(self):
         """
         Execute the protocol.
         """
-        
-
-        # alice fetches a "prekey bundle" from the server, and uses it to send
-        # an initial message to bob
-        ikb = self.bob.client.identity_key.public_key.public_bytes_raw()
-        self.alice.send_initial_message(self.server, ikb)
 
         # # bob receives and processes alice's initial message
         sk = self.bob.recv_initial_message(self.server)

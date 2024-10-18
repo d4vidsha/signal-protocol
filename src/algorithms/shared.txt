@@ -1,5 +1,0 @@
-Bob: hi
-Alice: hi
-Bob: hi
-Alice: hello
-Alice: daf

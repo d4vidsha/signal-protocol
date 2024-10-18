@@ -5,8 +5,10 @@ FROM python:3.9-slim
 WORKDIR /app
 
 # Copy the application code
-COPY alice.py .
-COPY bob.py .
+COPY . /app
+
+# Install the dependencies
+RUN pip install --no-cache-dir -r requirements.txt
 
 # By default, run nothing; use docker exec to run individual scripts
 CMD ["tail", "-f", "/dev/null"]

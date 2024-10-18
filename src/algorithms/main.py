@@ -1,10 +1,10 @@
 import logging
 import sys
 import argparse
-from algorithms.x3dh import X3DH
+from x3dh import X3DH
 
 # from algorithms.doublerachet import DoubleRachet
-from algorithms.x3dh import Client, Server
+from x3dh import Client, Server
 
 
 def main():
@@ -25,16 +25,15 @@ def main():
     args = parser.parse_args()
 
     # set up logging
-    match args.log:
-        case "DEBUG":
-            logging_level = logging.DEBUG
-            logging_format = "[%(asctime)s] %(levelname)s [%(name)s.%(funcName)s:%(lineno)d] %(message)s"
-        case "INFO":
-            logging_level = logging.INFO
-            logging_format = "[%(asctime)s] %(levelname)s: %(message)s"
-        case "ERROR":
-            logging_level = logging.ERROR
-            logging_format = "[%(asctime)s] %(levelname)s: %(message)s"
+    if args.log == "DEBUG":
+        logging_level = logging.DEBUG
+        logging_format = "[%(asctime)s] %(levelname)s [%(name)s.%(funcName)s:%(lineno)d] %(message)s"
+    elif args.log == "INFO":
+        logging_level = logging.INFO
+        logging_format = "[%(asctime)s] %(levelname)s: %(message)s"
+    elif args.log == "ERROR":
+        logging_level = logging.ERROR
+        logging_format = "[%(asctime)s] %(levelname)s: %(message)s"
 
     logging.basicConfig(stream=sys.stderr, level=logging_level, format=logging_format)
 
@@ -44,8 +43,7 @@ def main():
 
     # establish connection between alice and bob (x3dh)
     x3dh = X3DH(server, alice, bob)
-    sk = x3dh.run()
-    # server = x3dh.run_server()
+    x3dh.run_server()
 
     # send messages between alice and bob (double ratchet)
     # alice.send("Hello world!")
