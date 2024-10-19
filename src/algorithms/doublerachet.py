@@ -1,3 +1,4 @@
+import logging
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.asymmetric import x25519 as Curve25519
@@ -25,14 +26,34 @@ class Header:
         else:
             raise TypeError("dh_pub_key must be a X25519PublicKey")
 
-        # Convert pn to bytes
-        pn_bytes = str(self.pn).encode('utf-8')
+        # Convert pn to bytes (use a fixed size, e.g., 4 byte)
+        pn_bytes = self.pn.to_bytes(4, byteorder='big')  # Ensure it's 1 byte
+        logging.debug("pn_bytes", pn_bytes)
 
         # Convert n to bytes (use a fixed size, e.g., 4 bytes)
         n_bytes = self.n.to_bytes(4, byteorder='big')  # Ensure it's 4 bytes
         
         # Return concatenated bytes
         return dh_bytes + pn_bytes + n_bytes
+
+    @classmethod
+    def from_bytes(cls, byte_data):
+        # Extract the length of the dh_pub_key (32 bytes for X25519)
+        dh_length = 32
+        dh_pub_key_bytes = byte_data[:dh_length]
+
+        # Load the X25519PublicKey from bytes
+        dh_pub_key = Curve25519.X25519PublicKey.from_public_bytes(dh_pub_key_bytes)
+
+        # Extract pn length (4 byte length for pn)
+        pn_bytes = byte_data[dh_length:dh_length+4]
+        pn = int.from_bytes(pn_bytes, byteorder='big')  # Convert to integer
+
+        # Extract n bytes (the last 4 bytes)
+        n_bytes = byte_data[-4:]
+        n = int.from_bytes(n_bytes, byteorder='big')
+
+        return cls(dh_pub_key, pn, n)
 
 class DoubleRachet():
     def __init__(self):
@@ -71,6 +92,12 @@ class DoubleRachet():
 
     def DH(self, dh_pair, dh_pub):
         try:
+            if isinstance(dh_pair, bytes):
+                dh_pair = Curve25519.X25519PrivateKey.from_private_bytes(dh_pair)
+
+            # Ensure dh_pub is an instance of X25519PublicKey
+            if isinstance(dh_pub, bytes):
+                dh_pub = Curve25519.X25519PublicKey.from_public_bytes(dh_pub)
             shared_secret = dh_pair.exchange(dh_pub)
         except Exception as e:
             raise ValueError("Invalid public key provided for DH calculation") from e
@@ -78,6 +105,11 @@ class DoubleRachet():
         return shared_secret
 
     def KDF_RK(self, rk, dh_out):
+        if isinstance(rk, str):
+            rk = rk.encode()  # Convert to bytes if rk is a string
+        if isinstance(dh_out, str):
+            dh_out = bytes.fromhex(dh_out)  # Convert hex string to bytes if needed
+
         hkdf = HKDF(
             algorithm=hashes.SHA256(),
             length=64, 
@@ -105,6 +137,10 @@ class DoubleRachet():
         return hkdf.derive(key)
 
     def aes_ctr_encrypt(self, key, plaintext):
+        if isinstance(plaintext, str):
+            plaintext = plaintext.encode('utf-8')
+        else:
+            plaintext = bytes(plaintext)
         nonce = self.derive_nonce(key, 16)
         cipher = Cipher(algorithms.AES(key), modes.CTR(nonce), backend=default_backend())
         encryptor = cipher.encryptor()
@@ -206,6 +242,17 @@ class DoubleRachet():
 
     def HMAC_SHA256(self, key, data):
         return hmac.new(key, data, hashlib.sha256).digest()
+    
+    def print(self):
+        logging.debug(f"DHs: {self.DHs}")
+        logging.debug(f"DHr: {self.DHr}")
+        logging.debug(f"RK: {self.RK}")
+        logging.debug(f"CKs: {self.CKs}")
+        logging.debug(f"CKr: {self.CKr}")
+        logging.debug(f"Ns: {self.Ns}")
+        logging.debug(f"Nr: {self.Nr}")
+        logging.debug(f"PN: {self.PN}")
+        logging.debug(f"MKSKIPPED: {self.MKSKIPPED}")
 
 def main():
     alice = DoubleRachet()
@@ -218,11 +265,26 @@ def main():
 
     shared_secret_key = alice.DH(alice_dh_key_pair, bob_public_key)
 
+    logging.debug(f"Shared secret key: {shared_secret_key}")
+    logging.debug("Bob's public key: ", bob_public_key)
+    logging.debug("value of bob public key", bob_public_key.public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw
+        ).hex())
+    logging.debug("bob_dh_key_pair", bob_dh_key_pair)
+    logging.debug("value of bob_dh_key_pair", bob_dh_key_pair.private_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PrivateFormat.Raw,
+        encryption_algorithm=serialization.NoEncryption()
+    ).hex())
     # Alice initializes the Ratchet
     alice.RatchetInitAlice(shared_secret_key, bob_public_key)
 
     # Bob initializes the Ratchet
     bob.RatchetInitBob(shared_secret_key, bob_dh_key_pair)
+
+    alice.logging.debug()
+    bob.logging.debug()
 
     # Alice sends a message
     message = b"Hello Bob!"
@@ -231,7 +293,7 @@ def main():
     
     # Bob receives and decrypts the message
     decrypted_message = bob.RatchetDecrypt(header, ciphertext, ad)
-    print(f"Bob received: {decrypted_message}")
+    logging.debug(f"Bob received: {decrypted_message}")
 
     # Bob generate new DH key and sends a message
     message = b"Hello Alice!"
@@ -240,7 +302,7 @@ def main():
 
     # Alice receives and decrypts the message
     decrypted_message = alice.RatchetDecrypt(header, ciphertext, ad)
-    print(f"Alice received: {decrypted_message}")
+    logging.debug(f"Alice received: {decrypted_message}")
 
     # Alice generates a new DH key pair and send a message
     message = b"Hello Bob! Again"
@@ -249,7 +311,7 @@ def main():
 
     # Bob receives and decrypts the message
     decrypted_message = bob.RatchetDecrypt(header, ciphertext, ad)
-    print(f"Bob received: {decrypted_message}")
+    logging.debug(f"Bob received: {decrypted_message}")
 
     # Bob sends a message
     message = b"What's up Alice"
@@ -258,7 +320,7 @@ def main():
 
     # Alice receives and decrypts the message
     decrypted_message = alice.RatchetDecrypt(header, ciphertext, ad)
-    print(f"Alice received: {decrypted_message}")
+    logging.debug(f"Alice received: {decrypted_message}")
 
     # test out of order message
     message = b"Out of order message"
@@ -271,10 +333,10 @@ def main():
 
     # Alice receives and decrypts the message
     decrypted_message = alice.RatchetDecrypt(header2, ciphertext2, ad2)
-    print(f"Alice received: {decrypted_message}")
+    logging.debug(f"Alice received: {decrypted_message}")
 
     decrypted_message = alice.RatchetDecrypt(header, ciphertext, ad)
-    print(f"Alice received: {decrypted_message}")
+    logging.debug(f"Alice received: {decrypted_message}")
 
     # test out of order message and generate new DH key pair
     message = b"Out of order message"
@@ -291,13 +353,13 @@ def main():
 
     # Alice receives and decrypts the message
     decrypted_message = alice.RatchetDecrypt(header3, ciphertext3, ad3)
-    print(f"Alice received: {decrypted_message}")
+    logging.debug(f"Alice received: {decrypted_message}")
 
     decrypted_message = alice.RatchetDecrypt(header2, ciphertext2, ad2)
-    print(f"Alice received: {decrypted_message}")
+    logging.debug(f"Alice received: {decrypted_message}")
 
     decrypted_message = alice.RatchetDecrypt(header, ciphertext, ad)
-    print(f"Alice received: {decrypted_message}")
+    logging.debug(f"Alice received: {decrypted_message}")
 
 if __name__ == "__main__":
     main()

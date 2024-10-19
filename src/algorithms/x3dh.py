@@ -2,6 +2,7 @@
 X3DH implmementation.
 """
 
+import base64
 import os
 import logging
 
@@ -174,6 +175,7 @@ class Server:
         # self.message_queue: deque[Server.Message] = deque([])
         self.initial_messages: Dict[bytes, bytes] = {}
 
+
     def recv(self, data: bytes) -> None:
         """
         Receive data from a client.
@@ -254,6 +256,10 @@ class Client:
             shared_secret_key=None,
         )
         self.num_one_time_prekeys = num_one_time_prekeys
+        self.connection = False
+
+    def setConnection(self, connection):
+        self.connection = connection
 
     def __generate_one_time_prekeys(self, n: int) -> None:
         """
@@ -377,6 +383,8 @@ class Client:
         logging.debug("Sending message: %s", message)
         logging.debug("Message length: %s", len(message))
 
+        server.initial_messages[client] = message
+
         logging.debug("Deleting ephemeral key...")
         self.client.ephemeral_key = None
 
@@ -384,6 +392,10 @@ class Client:
         """
         Receive the initial message from the server.
         """
+        message = server.initial_messages[
+            self.client.identity_key.public_key.public_bytes_raw()
+        ]
+        logging.debug("Received message: %s", message)
 
         # get the public keys from the message
         if self.client.curve == Curve.CURVE25519:
@@ -435,8 +447,8 @@ class Client:
         )
         sk = hkdf.derive(bytes(sk))
         self.client.shared_secret_key = sk
-        logging.info("Shared secret key on Bob:   %s", sk)
-
+        logging.info("Shared secret key on Bob:  %s", sk)
+        logging.debug("Shared secret key length: %s", len(sk))
         return sk
 
 
@@ -453,7 +465,7 @@ class X3DH:
     def verify_signature(self, public_key, message):
         message_parts = message.split("||")
         if len(message_parts) != 2:
-            print("Invalid message format.")
+            logging.debug("Invalid message format.")
             return False
 
         original_message = message_parts[0].encode()  # Convert to bytes
@@ -469,10 +481,10 @@ class X3DH:
                 ),
                 hashes.SHA256()
             )
-            print("Signature is valid.")
+            logging.debug("Signature is valid.")
             return True
         except InvalidSignature:
-            print("Invalid signature.")
+            logging.debug("Invalid signature.")
             return False
 
     
@@ -514,11 +526,11 @@ class X3DH:
                 
                 for line in new_lines:
                     if line.startswith("Alice:"):
-                        print(f"server received from Alice: {line.strip()}")
+                        logging.debug(f"server received from Alice: {line.strip()}")
                         message = line.strip().split(": ")[1]  # Extract the message after "Alice:"
                         
                         if self.verify_signature(alice_public_key, message):
-                            print(f"server received: {message}")
+                            logging.debug(f"server received: {message}")
                             self.alice.send_initial_message(self.server, ikb)
                             sk = self.bob.recv_initial_message(self.server)
                             replyMessage = sk
@@ -527,11 +539,11 @@ class X3DH:
                 # Update last_seen to reflect the number of lines read
                 last_seen = len(lines)
             time.sleep(1)
-        print("Server received message from Alice")
-        shared_file_Alice = "/app/sharedInitialMessageAlice.txt"
+        replyMessage = base64.b64encode(replyMessage).decode('utf-8')
+        logging.debug("Server received message from Alice")
         shared_file_Bob = "/app/sharedInitialMessageBob.txt"
         if replyMessage:
-            with open(shared_file_Alice, "w") as f:
+            with open(shared_file, "w") as f:
                 f.write(f"Server: {replyMessage}\n")
             with open(shared_file_Bob, "w") as f:
                 f.write(f"Server: {replyMessage}\n")

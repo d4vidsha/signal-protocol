@@ -1,12 +1,15 @@
-import time
+import os
+import logging
 import threading
+import time
 from x3dh import X3DH
 from x3dh import Client
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.asymmetric import padding, x25519 as Curve25519
 from cryptography.hazmat.backends import default_backend
-from doublerachet import DoubleRachet
+from doublerachet import DoubleRachet, Header
+import base64
 
 # Shared file for communication
 shared_fileKDC = "/app/messageKDC.txt"
@@ -39,18 +42,29 @@ def symmetric_encrypt(key, plaintext):
     """
     Encrypt the plaintext using the provided key.
 
-    :param key: The symmetric key to use for encryption
+    :param key: The symmetric key to use for encryption (must be 16, 24, or 32 bytes)
     :param plaintext: The plaintext to encrypt
     :return: The ciphertext
     """
+    # Ensure key is the correct length for AES
+    assert len(key) in {16, 24, 32}, "Key must be 16, 24, or 32 bytes long."
+    
+    # Generate a random nonce (16 bytes)
+    nonce = os.urandom(16)
+
+    # Create the Cipher object
     cipher = Cipher(
         algorithms.AES(key),
-        modes.CTR(b"\x00" * 8),
+        modes.CTR(nonce),
         backend=default_backend()
     )
+    
+    # Create an encryptor and encrypt the plaintext
     encryptor = cipher.encryptor()
     ciphertext = encryptor.update(plaintext) + encryptor.finalize()
-    return ciphertext
+
+    # Optionally, store or log the nonce somewhere secure for later use
+    return nonce, ciphertext  # Return only the ciphertext
 
 # alice private key
 with open(private_key_path, "rb") as key_file:
@@ -62,7 +76,7 @@ with open(private_key_path, "rb") as key_file:
 
 def send_messages():
     global username, target
-    print("Welcome to the Server,", username)
+    logging.debug("Welcome to the Server,", username)
     target = input("Enter the recipient's username: ")
 
     while True:
@@ -81,44 +95,99 @@ def send_messages():
                 if line.startswith(f"Server:"):
                     serverMesage = line.strip()
                     # read the key from the message
-                    key = serverMesage.split(":")[1]
+                    key = serverMesage.split(":")[1].strip()
+                    decoded_key = base64.b64decode(key)
+                    logging.debug(f"Received key: {decoded_key}")
+                    logging.debug("len of key: ", len(decoded_key))
             if serverMesage:
                 break
         time.sleep(1)
 
-    print(("received key: ", key))
-    alice_dh_key_pair = Curve25519.generate_private_key()
-    alice_dh_public_key = alice_dh_key_pair.public_key()
+    Bob_dh_key_pair = Curve25519.X25519PrivateKey.generate()
+    Bob_dh_public_key = Bob_dh_key_pair.public_key()
+    bob_dh_public_key_hex = Bob_dh_public_key.public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw
+        ).hex()  # Convert to hex for easier readability
+    bob_dh_key_pair_hex = Bob_dh_key_pair.private_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PrivateFormat.Raw,
+        encryption_algorithm=serialization.NoEncryption()
+    ).hex()
+    alice_dh_key_pair = aliceCommunicator.generateDH()
+    shared_secret = aliceCommunicator.DH(alice_dh_key_pair, Bob_dh_public_key)
+    shared_secret_bytes = shared_secret
+    logging.debug(f"Shared secret: {shared_secret_bytes}")
     while True:
         with open(shared_file, "a") as f:
-            message = "Alice dh public key: " + alice_dh_public_key
-            cipher = symmetric_encrypt(key.encode(), message.encode())
-            f.write(f"{username}: {cipher.hex()}\n")
-        print(f"{username} sent: {message}")
+            message = "Alice dh public key: " + shared_secret_bytes.hex() + "||" + bob_dh_key_pair_hex
+            logging.debug(f"Sending: {message}")
+            nonce, cipher = symmetric_encrypt(decoded_key, message.encode())
+            f.write(f"{username} dh key:  {nonce.hex()}||{cipher.hex()}\n")
+        logging.debug(f"{username} dh key:  {nonce.hex()}||{cipher.hex()}\n")
         break
     
-    print("send dh key to Bob")
-
-    alice.RatchetInitBob(key, alice_dh_key_pair)
+    logging.debug("send dh key to Bob")
+    
+    logging.debug("shared secret: ", shared_secret)
+    logging.debug("value of bob_dh_key_pair", Bob_dh_key_pair.private_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PrivateFormat.Raw,
+        encryption_algorithm=serialization.NoEncryption()
+    ).hex())
+    logging.debug("value of bob_dh_public_key", Bob_dh_public_key.public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw
+    ).hex())
+    aliceCommunicator.RatchetInitAlice(shared_secret, Bob_dh_public_key)
     while True:
         message = input(f"{username}, enter your message: ")
-        header, ciphertext = alice.RatchetEncrypt(message, ad)
-        ciphertext = header + "||" + ciphertext
+        header, ciphertext = aliceCommunicator.RatchetEncrypt(message, ad)
+        logging.debug("ciphertext",ciphertext)
+        #extract header, ciphertext, ad from ciphertext
+        nonce, ciphertext, associatedData = ciphertext
+
+        logging.debug("header", header)
+        if isinstance(header, Header):
+            header_bytes = header.to_bytes()  # Serialize the Header object to bytes
+            header_str = header_bytes.hex()  # Convert to hex string
+
+        if isinstance(nonce, bytes):
+            nonce_str = nonce.hex()
+        else:
+            nonce_str = str(nonce)
+
+        if isinstance(ciphertext, bytes):
+            ciphertext_str = ciphertext.hex()
+        else:
+            ciphertext_str = str(ciphertext)
+        
+        if isinstance(associatedData, bytes):
+            associatedData_str = associatedData.hex()
+        else:
+            associatedData_str = str(associatedData)
+
+        message = f"{header_str}||{nonce_str}||{ciphertext_str}||{associatedData_str}"
         with open(shared_file, "a") as f:
-            f.write(f"{username}: {ciphertext}\n")
-        print(f"{username} sent: {message}")
+            f.write(f"{username}: {message}\n")
+        logging.debug(f"{username} sent: {message}")
 
 def listen_for_messages():
     last_seen = 0
     while True:
         with open(shared_file, "r") as f:
             lines = f.readlines()
-            # Print new messages that Bob hasn't seen yet
+            # logging.debug( new messages that Bob hasn't seen yet
             for line in lines[last_seen:]:
                 if line.startswith("Bob:"):
                     ciphertext = line.split(":")[1]
-                    header, ciphertext = ciphertext.split("||")
-                    decrypted_message = alice.RatchetDecrypt(header, ciphertext, ad)
+                    header, nonce, ciphertext, associatedDate = ciphertext.split("||")
+                    header = Header.from_bytes(bytes.fromhex(header))
+                    nonce = bytes.fromhex(nonce)
+                    ciphertext = bytes.fromhex(ciphertext)
+                    associatedData = bytes.fromhex(associatedDate)
+                    ciphertext = (nonce, ciphertext, associatedData)
+                    decrypted_message = aliceCommunicator.RatchetDecrypt(header, ciphertext, ad)
                     print(f"{username} received: {decrypted_message}")
             last_seen = len(lines)
         time.sleep(1)

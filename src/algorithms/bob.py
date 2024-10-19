@@ -1,15 +1,16 @@
+import base64
 import time
 import threading
+import logging
 from x3dh import X3DH
 from x3dh import Client
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from cryptography.hazmat.primitives.asymmetric import padding, x25519 as Curve25519
+from cryptography.hazmat.primitives.asymmetric import padding, x25519 as Curve25519, x25519
 from cryptography.hazmat.backends import default_backend
-from doublerachet import DoubleRachet
+from doublerachet import DoubleRachet, Header
 
 # Shared file for communication
-shared_fileKDC = "/app/messageKDC.txt"
 shared_file = "/app/shared.txt"
 private_key_path = "/app/Bob_private_key.pem"
 
@@ -52,22 +53,32 @@ def symmetric_encrypt(key, plaintext):
     ciphertext = encryptor.update(plaintext) + encryptor.finalize()
     return ciphertext
 
-def symmetric_decrypt(key, ciphertext):
+def symmetric_decrypt(key, nonce, ciphertext):
     """
-    Decrypt the ciphertext using the provided key.
+    Decrypt the ciphertext using the provided key and nonce.
 
-    :param key: The symmetric key to use for decryption
+    :param key: The symmetric key to use for decryption (must be 16, 24, or 32 bytes)
+    :param nonce: The nonce used during encryption (must be 16 bytes)
     :param ciphertext: The ciphertext to decrypt
     :return: The plaintext
     """
+    # Ensure key is the correct length for AES
+    assert len(key) in {16, 24, 32}, "Key must be 16, 24, or 32 bytes long."
+    assert len(nonce) == 16, "Nonce must be 16 bytes long."
+
+    # Create the Cipher object
     cipher = Cipher(
         algorithms.AES(key),
-        modes.CTR(b"\x00" * 8),
+        modes.CTR(nonce),
         backend=default_backend()
     )
+
+    # Create a decryptor and decrypt the ciphertext
     decryptor = cipher.decryptor()
     plaintext = decryptor.update(ciphertext) + decryptor.finalize()
+
     return plaintext
+    
 
 # bob private key
 with open(private_key_path, "rb") as key_file:
@@ -79,7 +90,7 @@ with open(private_key_path, "rb") as key_file:
 
 def send_messages():
     global username, target
-    print("Welcome to the Server,", username)
+    logging.debug("Welcome to the Server,", username)
     # target = input("Enter the recipient's username: ")
 
     # while True:
@@ -111,8 +122,42 @@ def send_messages():
     #         cipher = symmetric_encrypt(key.encode(), message.encode())
     #         f.write(f"{username}: {cipher.hex()}\n")
             
-    #     print(f"{username} sent: {message}")
+    #     logging.debug(f"{username} sent: {message}")
     #     break
+    
+    while True:
+        if bob.connection:
+            message = input(f"{username}, enter your message: ")
+            header, ciphertext = bobCommunicator.RatchetEncrypt(message, ad)
+            logging.debug("ciphertext",ciphertext)
+            #extract header, ciphertext, ad from ciphertext
+            nonce, ciphertext, associatedData = ciphertext
+
+            logging.debug("header", header)
+            if isinstance(header, Header):
+                header_bytes = header.to_bytes()  # Serialize the Header object to bytes
+                header_str = header_bytes.hex()  # Convert to hex string
+
+            if isinstance(nonce, bytes):
+                nonce_str = nonce.hex()
+            else:
+                nonce_str = str(nonce)
+
+            if isinstance(ciphertext, bytes):
+                ciphertext_str = ciphertext.hex()
+            else:
+                ciphertext_str = str(ciphertext)
+            
+            if isinstance(associatedData, bytes):
+                associatedData_str = associatedData.hex()
+            else:
+                associatedData_str = str(associatedData)
+
+            message = f"{header_str}||{nonce_str}||{ciphertext_str}||{associatedData_str}"
+            with open(shared_file, "a") as f:
+                f.write(f"{username}: {message}\n")
+            logging.debug(f"{username} sent: {message}")
+
 
 def listen_for_messages():
     last_seen = 0
@@ -120,41 +165,58 @@ def listen_for_messages():
     while True:
         with open(shared_file_Bob, "r") as f:
             lines = f.readlines()
-            # Print new messages that Bob hasn't seen yet
+            # logging.debug( new messages that Bob hasn't seen yet
             for line in lines[last_seen:]:
                 if line.startswith("Server:"):
-                    key = line.split(":")[1]
+                    key = line.split(":")[1].strip()
+                    key = base64.b64decode(key)
             if key:
                 break
         time.sleep(1)
+    # clear the file
+    with open(shared_file_Bob, "w") as f:
+        f.write("")
 
-    print(("received key from server: ", key))
-    alice_dh_public_key = None
+    logging.debug(("received key from server: ", key))
+    bob_key_pair_key = None
     while True:
         with open(shared_file, "r") as f:
             lines = f.readlines()
-            # Print new messages that Bob hasn't seen yet
+            # logging.debug( new messages that Bob hasn't seen yet
             for line in lines[last_seen:]:
-                if line.startswith("Alice dh public key:"):
-                    ciphertext = line.split(":")[1]
-                    alice_dh_public_key = symmetric_decrypt(key.encode(), bytes.fromhex(ciphertext))
-            if alice_dh_public_key:
-                bobCommunicator.RatchetInitAlice(key, alice_dh_public_key)
+                if line.startswith("Alice dh key:"):
+                    nonce, ciphertext = line.split(":")[1].split("||")
+                    message = symmetric_decrypt(key, bytes.fromhex(nonce), bytes.fromhex(ciphertext))
+                    message = message.decode()
+                    shared_secret_bytes = message.split("||")[0]
+                    shared_secret_bytes = shared_secret_bytes.split(":")[1]
+                    bob_key_pair_key_hex = message.split("||")[1]
+                    bob_key_pair_key_bytes = bytes.fromhex(bob_key_pair_key_hex)
+                    shared_secret = bytes.fromhex(shared_secret_bytes)
+                    bob_key_pair_key = Curve25519.X25519PrivateKey.from_private_bytes(bob_key_pair_key_bytes)
+            if bob_key_pair_key:
+                bobCommunicator.RatchetInitBob(shared_secret, bob_key_pair_key)
                 break
             last_seen = len(lines)
         time.sleep(1)
     
-    print("received dh key from Alice")
+    logging.debug("received dh key from Alice")
+    bob.setConnection(True)
 
     while True:
         with open(shared_file, "r") as f:
             lines = f.readlines()
-            # Print new messages that Bob hasn't seen yet
+            # logging.debug( new messages that Bob hasn't seen yet
             for line in lines[last_seen:]:
                 if line.startswith("Alice:"):
                     ciphertext = line.split(":")[1]
-                    header, ciphertext = ciphertext.split("||")
-                    decrypted_message = bob.RatchetDecrypt(header, ciphertext, ad)
+                    header, nonce, ciphertext, associatedDate = ciphertext.split("||")
+                    header = Header.from_bytes(bytes.fromhex(header))
+                    nonce = bytes.fromhex(nonce)
+                    ciphertext = bytes.fromhex(ciphertext)
+                    associatedData = bytes.fromhex(associatedDate)
+                    ciphertext = (nonce, ciphertext, associatedData)
+                    decrypted_message = bobCommunicator.RatchetDecrypt(header, ciphertext, ad)
                     print(f"{username} received: {decrypted_message}")
             last_seen = len(lines)
         time.sleep(1)
