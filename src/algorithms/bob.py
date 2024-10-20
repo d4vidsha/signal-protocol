@@ -128,34 +128,38 @@ def send_messages():
     #     break
     
     while True:
-        if bob.connection:
-            message = input(f"{username}: ")
-            header, ciphertext = bobCommunicator.RatchetEncrypt(message, ad)
-            #extract header, ciphertext, ad from ciphertext
-            nonce, ciphertext, associatedData = ciphertext
+        if not bob.connection:
+            continue
+        message = input(f"{username}: ")
 
-            if isinstance(header, Header):
-                header_bytes = header.to_bytes()  # Serialize the Header object to bytes
-                header_str = header_bytes.hex()  # Convert to hex string
+        print(f"\r{username}: {message}")
+
+        header, ciphertext = bobCommunicator.RatchetEncrypt(message, ad)
+        #extract header, ciphertext, ad from ciphertext
+        nonce, ciphertext, associatedData = ciphertext
+
+        if isinstance(header, Header):
+            header_bytes = header.to_bytes()  # Serialize the Header object to bytes
+            header_str = header_bytes.hex()  # Convert to hex string
                 
-            if isinstance(nonce, bytes):
-                nonce_str = nonce.hex()
-            else:
-                nonce_str = str(nonce)
+        if isinstance(nonce, bytes):
+            nonce_str = nonce.hex()
+        else:
+            nonce_str = str(nonce)
 
-            if isinstance(ciphertext, bytes):
-                ciphertext_str = ciphertext.hex()
-            else:
-                ciphertext_str = str(ciphertext)
+        if isinstance(ciphertext, bytes):
+            ciphertext_str = ciphertext.hex()
+        else:
+            ciphertext_str = str(ciphertext)
                 
-            if isinstance(associatedData, bytes):
-                associatedData_str = associatedData.hex()
-            else:
-                associatedData_str = str(associatedData)
+        if isinstance(associatedData, bytes):
+            associatedData_str = associatedData.hex()
+        else:
+            associatedData_str = str(associatedData)
 
-            message = f"{header_str}||{nonce_str}||{ciphertext_str}||{associatedData_str}"
-            with open(shared_file, "a") as f:
-                f.write(f"{username}: {message}\n")
+        message = f"{header_str}||{nonce_str}||{ciphertext_str}||{associatedData_str}"
+        with open(shared_file, "a") as f:
+            f.write(f"{username}: {message}\n")
 
 
 def listen_for_messages():
