@@ -492,7 +492,8 @@ class X3DH:
         """
         Run the server.
         """
-        shared_file = "/app/messageKDC.txt"
+        shared_file_Alice = "/app/messageKDC.txt"
+        shared_file_Bob = "/app/sharedInitialMessageBob.txt"
         # bob publishes his identity key and prekeys to a server
         self.bob.publish(self.server)
 
@@ -520,7 +521,7 @@ class X3DH:
         replyMessage = None
         message = None
         while True:
-            with open(shared_file, "r") as f:
+            with open(shared_file_Alice, "r") as f:
                 lines = f.readlines()  # Read all lines in the file
                 new_lines = lines[last_seen:]  # Only process lines that haven't been read
                 
@@ -541,18 +542,9 @@ class X3DH:
             time.sleep(1)
         replyMessage = base64.b64encode(replyMessage).decode('utf-8')
         logging.debug("Server received message from Alice")
-        shared_file_Bob = "/app/sharedInitialMessageBob.txt"
+        
         if replyMessage:
-            with open(shared_file, "w") as f:
+            with open(shared_file_Alice, "w") as f:
                 f.write(f"Server: {replyMessage}\n")
             with open(shared_file_Bob, "w") as f:
                 f.write(f"Server: {replyMessage}\n")
-
-    def run(self):
-        """
-        Execute the protocol.
-        """
-
-        # # bob receives and processes alice's initial message
-        sk = self.bob.recv_initial_message(self.server)
-        return sk

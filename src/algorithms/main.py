@@ -41,12 +41,8 @@ def main():
     alice = Client("Alice")
     bob = Client("Bob")
 
-    # establish connection between alice and bob (x3dh)
     x3dh = X3DH(server, alice, bob)
     x3dh.run_server()
-
-    # send messages between alice and bob (double ratchet)
-    # alice.send("Hello world!")
 
     return
 

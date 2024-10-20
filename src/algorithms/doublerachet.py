@@ -28,7 +28,6 @@ class Header:
 
         # Convert pn to bytes (use a fixed size, e.g., 4 byte)
         pn_bytes = self.pn.to_bytes(4, byteorder='big')  # Ensure it's 1 byte
-        logging.debug("pn_bytes", pn_bytes)
 
         # Convert n to bytes (use a fixed size, e.g., 4 bytes)
         n_bytes = self.n.to_bytes(4, byteorder='big')  # Ensure it's 4 bytes
@@ -91,6 +90,8 @@ class DoubleRachet():
         self.Nr = 0
 
     def DH(self, dh_pair, dh_pub):
+        logging.debug(f"DH pair: {dh_pair}")
+        logging.debug(f"DH public key: {dh_pub}")
         try:
             if isinstance(dh_pair, bytes):
                 dh_pair = Curve25519.X25519PrivateKey.from_private_bytes(dh_pair)
@@ -188,6 +189,8 @@ class DoubleRachet():
         self.CKs, mk = self.KDF_CK(self.CKs)
         header = self.HEADER(self.DHs, self.PN, self.Ns)
         self.Ns += 1
+        logging.debug(f"CKs: {self.CKs}")
+        logging.debug(f"MK: {mk}")
         return header, self.ENCRYPT(mk, plaintext, self.CONCAT(AD, header))
 
     def RatchetDecrypt(self, header, ciphertext, AD):
@@ -200,6 +203,8 @@ class DoubleRachet():
         self.SkipMessageKeys(header.n)
         self.CKr, mk = self.KDF_CK(self.CKr)
         self.Nr += 1
+        logging.debug(f"CKr: {self.CKr}")
+        logging.debug(f"MK: {mk}")
         return self.DECRYPT(mk, ciphertext, self.CONCAT(AD, header))
 
     def TrySkippedMessageKeys(self, header, ciphertext, AD):
@@ -239,6 +244,14 @@ class DoubleRachet():
         self.PN = self.Ns
         self.Ns = 0
         self.Nr = 0
+        logging.debug(f"DHs: {self.DHs}")
+        logging.debug(f"DHr: {self.DHr}")
+        logging.debug(f"RK: {self.RK}")
+        logging.debug(f"CKs: {self.CKs}")
+        logging.debug(f"CKr: {self.CKr}")
+        logging.debug(f"Ns: {self.Ns}")
+        logging.debug(f"Nr: {self.Nr}")
+        logging.debug(f"PN: {self.PN}")
 
     def HMAC_SHA256(self, key, data):
         return hmac.new(key, data, hashlib.sha256).digest()
@@ -265,26 +278,11 @@ def main():
 
     shared_secret_key = alice.DH(alice_dh_key_pair, bob_public_key)
 
-    logging.debug(f"Shared secret key: {shared_secret_key}")
-    logging.debug("Bob's public key: ", bob_public_key)
-    logging.debug("value of bob public key", bob_public_key.public_bytes(
-            encoding=serialization.Encoding.Raw,
-            format=serialization.PublicFormat.Raw
-        ).hex())
-    logging.debug("bob_dh_key_pair", bob_dh_key_pair)
-    logging.debug("value of bob_dh_key_pair", bob_dh_key_pair.private_bytes(
-        encoding=serialization.Encoding.Raw,
-        format=serialization.PrivateFormat.Raw,
-        encryption_algorithm=serialization.NoEncryption()
-    ).hex())
     # Alice initializes the Ratchet
     alice.RatchetInitAlice(shared_secret_key, bob_public_key)
 
     # Bob initializes the Ratchet
     bob.RatchetInitBob(shared_secret_key, bob_dh_key_pair)
-
-    alice.logging.debug()
-    bob.logging.debug()
 
     # Alice sends a message
     message = b"Hello Bob!"

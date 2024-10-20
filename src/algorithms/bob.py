@@ -1,4 +1,6 @@
+import argparse
 import base64
+import sys
 import time
 import threading
 import logging
@@ -90,7 +92,7 @@ with open(private_key_path, "rb") as key_file:
 
 def send_messages():
     global username, target
-    logging.debug("Welcome to the Server,", username)
+    print("Welcome to the Server,", username)
     # target = input("Enter the recipient's username: ")
 
     # while True:
@@ -127,17 +129,15 @@ def send_messages():
     
     while True:
         if bob.connection:
-            message = input(f"{username}, enter your message: ")
+            message = input(f"{username}: ")
             header, ciphertext = bobCommunicator.RatchetEncrypt(message, ad)
-            logging.debug("ciphertext",ciphertext)
             #extract header, ciphertext, ad from ciphertext
             nonce, ciphertext, associatedData = ciphertext
 
-            logging.debug("header", header)
             if isinstance(header, Header):
                 header_bytes = header.to_bytes()  # Serialize the Header object to bytes
                 header_str = header_bytes.hex()  # Convert to hex string
-
+                
             if isinstance(nonce, bytes):
                 nonce_str = nonce.hex()
             else:
@@ -147,7 +147,7 @@ def send_messages():
                 ciphertext_str = ciphertext.hex()
             else:
                 ciphertext_str = str(ciphertext)
-            
+                
             if isinstance(associatedData, bytes):
                 associatedData_str = associatedData.hex()
             else:
@@ -156,16 +156,16 @@ def send_messages():
             message = f"{header_str}||{nonce_str}||{ciphertext_str}||{associatedData_str}"
             with open(shared_file, "a") as f:
                 f.write(f"{username}: {message}\n")
-            logging.debug(f"{username} sent: {message}")
 
 
 def listen_for_messages():
     last_seen = 0
     shared_file_Bob = "/app/sharedInitialMessageBob.txt"
+    key = False
     while True:
         with open(shared_file_Bob, "r") as f:
             lines = f.readlines()
-            # logging.debug( new messages that Bob hasn't seen yet
+            # print new messages that Bob hasn't seen yet
             for line in lines[last_seen:]:
                 if line.startswith("Server:"):
                     key = line.split(":")[1].strip()
@@ -175,38 +175,36 @@ def listen_for_messages():
         time.sleep(1)
     # clear the file
     with open(shared_file_Bob, "w") as f:
-        f.write("")
+        pass
 
     logging.debug(("received key from server: ", key))
     bob_key_pair_key = None
     while True:
         with open(shared_file, "r") as f:
             lines = f.readlines()
-            # logging.debug( new messages that Bob hasn't seen yet
+            # print new messages that Bob hasn't seen yet
             for line in lines[last_seen:]:
                 if line.startswith("Alice dh key:"):
                     nonce, ciphertext = line.split(":")[1].split("||")
                     message = symmetric_decrypt(key, bytes.fromhex(nonce), bytes.fromhex(ciphertext))
                     message = message.decode()
-                    shared_secret_bytes = message.split("||")[0]
-                    shared_secret_bytes = shared_secret_bytes.split(":")[1]
-                    bob_key_pair_key_hex = message.split("||")[1]
+                    bob_key_pair_key_hex = message.split(":")[1].strip()
                     bob_key_pair_key_bytes = bytes.fromhex(bob_key_pair_key_hex)
-                    shared_secret = bytes.fromhex(shared_secret_bytes)
                     bob_key_pair_key = Curve25519.X25519PrivateKey.from_private_bytes(bob_key_pair_key_bytes)
             if bob_key_pair_key:
-                bobCommunicator.RatchetInitBob(shared_secret, bob_key_pair_key)
+                bobCommunicator.RatchetInitBob(key, bob_key_pair_key)
+                bobCommunicator.print()
                 break
             last_seen = len(lines)
         time.sleep(1)
     
     logging.debug("received dh key from Alice")
-    bob.setConnection(True)
+    print("Wait for the Alice first message and Enjoy your chat with Alice!")
 
     while True:
         with open(shared_file, "r") as f:
             lines = f.readlines()
-            # logging.debug( new messages that Bob hasn't seen yet
+            # print new messages that Bob hasn't seen yet
             for line in lines[last_seen:]:
                 if line.startswith("Alice:"):
                     ciphertext = line.split(":")[1]
@@ -217,11 +215,40 @@ def listen_for_messages():
                     associatedData = bytes.fromhex(associatedDate)
                     ciphertext = (nonce, ciphertext, associatedData)
                     decrypted_message = bobCommunicator.RatchetDecrypt(header, ciphertext, ad)
-                    print(f"{username} received: {decrypted_message}")
+                    decrypted_message = decrypted_message.decode('utf-8')
+                    print(f"\rAlice: {decrypted_message}                   ")
+                    if not bob.connection:
+                        bob.setConnection(True)
+                        continue
+                    print(f"\r{username}: ", end='') 
             last_seen = len(lines)
         time.sleep(1)
 
 if __name__ == '__main__':
+    # get all the arguments
+    parser = argparse.ArgumentParser(description="Demonstrate Signal Protocol.")
+    parser.add_argument(
+        "--log",
+        type=str,
+        choices=["DEBUG", "INFO", "ERROR"],
+        default="INFO",
+        help="The log level to use.",
+    )
+    args = parser.parse_args()
+
+    # set up logging
+    if args.log == "DEBUG":
+        logging_level = logging.DEBUG
+        logging_format = "[%(asctime)s] %(levelname)s [%(name)s.%(funcName)s:%(lineno)d] %(message)s"
+    elif args.log == "INFO":
+        logging_level = logging.INFO
+        logging_format = "[%(asctime)s] %(levelname)s: %(message)s"
+    elif args.log == "ERROR":
+        logging_level = logging.ERROR
+        logging_format = "[%(asctime)s] %(levelname)s: %(message)s"
+
+    logging.basicConfig(stream=sys.stderr, level=logging_level, format=logging_format)
+    
     ad = "Alice and Bob"
     bob = Client("Bob")
     bobCommunicator = DoubleRachet()
